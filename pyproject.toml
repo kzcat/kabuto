@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sekai-kabuka"
+version = "0.1.0"
+description = "世界の株価 CLI ツール"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+sekai-kabuka = "sekai_kabuka.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
