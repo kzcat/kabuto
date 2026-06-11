@@ -24,6 +24,12 @@ const (
 	sparkRunes = "▁▂▃▄▅▆▇█"
 )
 
+// 騰落色のベース RGB(truecolor グラデーション用)
+var (
+	greenRGB = [3]int{0, 200, 0}
+	redRGB   = [3]int{220, 40, 40}
+)
+
 var jst = time.FixedZone("JST", 9*3600)
 
 // Options は描画オプション
@@ -225,6 +231,44 @@ func arrow(change float64) string {
 	return "・"
 }
 
+// truecolorSupported は環境変数 COLORTERM が truecolor / 24bit かを判定する。
+func truecolorSupported() bool {
+	ct := strings.ToLower(os.Getenv("COLORTERM"))
+	return ct == "truecolor" || ct == "24bit"
+}
+
+// baseRGBFor は騰落値に応じたベース RGB を返す(rg反転対応)。
+func baseRGBFor(change float64, redGreen bool) [3]int {
+	up, down := greenRGB, redRGB
+	if redGreen {
+		up, down = redRGB, greenRGB
+	}
+	if change < 0 {
+		return down
+	}
+	return up // 上昇・変わらずは up 色を基準にする
+}
+
+// fg24 は truecolor 前景色エスケープを返す。
+func fg24(c [3]int) string {
+	return fmt.Sprintf("\033[38;2;%d;%d;%dm", c[0], c[1], c[2])
+}
+
+// gradientRGB は最上行(基準色)から最下行(約50%暗)へ線形補間した row 番目の RGB を返す。
+func gradientRGB(base [3]int, row, rows int) [3]int {
+	if rows <= 1 {
+		return base
+	}
+	// t=0(最上行)→1(最下行)。最下行は base の約50%。
+	t := float64(row) / float64(rows-1)
+	factor := 1.0 - 0.5*t
+	var out [3]int
+	for i := 0; i < 3; i++ {
+		out[i] = int(math.Round(float64(base[i]) * factor))
+	}
+	return out
+}
+
 // Sparkline は数値系列から Unicode スパークライン文字列を生成する。
 // width が正なら系列を等間隔にダウンサンプルして width 文字に収める。
 func Sparkline(series []float64, width int) string {
@@ -273,11 +317,45 @@ func Sparkline(series []float64, width int) string {
 	return b.String()
 }
 
-// SparklineRows は数値系列から N 行の複数行スパークラインを生成する。
-// 系列を width 列にダウンサンプルし、各列の値を rows*8 段階に量子化する。
-// レベルを含む行に部分ブロック(▁▂▃▄▅▆▇█)、それより下の行は █、上は空白で描く。
-// 返り値は上から下へ rows 行(各行 width 文字)。
-func SparklineRows(series []float64, width, rows int) []string {
+// brailleBase は点字ブロックの開始コードポイント(U+2800)。
+const brailleBase = 0x2800
+
+// brailleDotBits[col][rowInCell] は点字ドットのビット(Unicode 標準)。
+// 左列(col=0)上から: dot1=0x01, dot2=0x02, dot3=0x04, dot7=0x40
+// 右列(col=1)上から: dot4=0x08, dot5=0x10, dot6=0x20, dot8=0x80
+var brailleDotBits = [2][4]int{
+	{0x01, 0x02, 0x04, 0x40}, // 左列(上→下)
+	{0x08, 0x10, 0x20, 0x80}, // 右列(上→下)
+}
+
+// downsample は系列を n 点に等間隔でダウンサンプルする(null 補間済みを前提)。
+func downsample(series []float64, n int) []float64 {
+	if n < 1 {
+		n = 1
+	}
+	pts := make([]float64, n)
+	if len(series) == 0 {
+		return pts
+	}
+	if len(series) == 1 || n == 1 {
+		v := series[len(series)-1]
+		for i := range pts {
+			pts[i] = v
+		}
+		return pts
+	}
+	for i := 0; i < n; i++ {
+		idx := i * (len(series) - 1) / (n - 1)
+		pts[i] = series[idx]
+	}
+	return pts
+}
+
+// BrailleRows は数値系列を点字エリアチャートとして width セル × rows セルで描く。
+// 解像度は横 2*width 点 × 縦 4*rows 段階。系列を 2*width 点にダウンサンプルし、
+// 各 x 点の値を 0..(4*rows-1) に量子化、その高さから下のドットをすべて立てる(面塗り)。
+// 返り値は上から下へ rows 行(各行 width ルーン、すべて点字 U+2800〜U+28FF)。
+func BrailleRows(series []float64, width, rows int) []string {
 	if rows < 1 {
 		rows = 1
 	}
@@ -285,38 +363,19 @@ func SparklineRows(series []float64, width, rows int) []string {
 		width = 1
 	}
 	out := make([]string, rows)
+	blankCell := rune(brailleBase) // 全ドット消灯のセル
 	if len(series) == 0 {
-		blank := strings.Repeat(" ", width)
+		blank := strings.Repeat(string(blankCell), width)
 		for i := range out {
 			out[i] = blank
 		}
 		return out
 	}
-	runes := []rune(sparkRunes) // 8段階
-	// width 列にダウンサンプル
-	pts := make([]float64, width)
-	if len(series) == 1 {
-		for i := range pts {
-			pts[i] = series[0]
-		}
-	} else if len(series) >= width {
-		for i := 0; i < width; i++ {
-			idx := i * (len(series) - 1) / (width - 1)
-			if width == 1 {
-				idx = len(series) - 1
-			}
-			pts[i] = series[idx]
-		}
-	} else {
-		// 系列が幅より短い場合も等間隔マッピング(値を引き伸ばす)
-		for i := 0; i < width; i++ {
-			idx := i * (len(series) - 1) / (width - 1)
-			if width == 1 {
-				idx = len(series) - 1
-			}
-			pts[i] = series[idx]
-		}
-	}
+
+	xPoints := 2 * width
+	yLevels := 4 * rows
+	pts := downsample(series, xPoints)
+
 	min, max := pts[0], pts[0]
 	for _, v := range pts {
 		if v < min {
@@ -327,40 +386,49 @@ func SparklineRows(series []float64, width, rows int) []string {
 		}
 	}
 	span := max - min
-	steps := rows * len(runes) // 総段階数
-	// 各列の量子化レベル(0..steps-1)
-	rowsBuf := make([][]rune, rows)
-	for r := range rowsBuf {
-		rowsBuf[r] = make([]rune, width)
-		for c := range rowsBuf[r] {
-			rowsBuf[r][c] = ' '
-		}
+
+	// 各セルのビット値を蓄積する [row][col]
+	cells := make([][]int, rows)
+	for r := range cells {
+		cells[r] = make([]int, width)
 	}
-	for c, v := range pts {
+
+	for x, v := range pts {
+		// 量子化: 0..yLevels-1(下が 0、上が yLevels-1)
 		var level int
 		if span == 0 {
-			level = 0 // フラットは最下行の最低ブロック
+			level = 0 // フラットは最下段
 		} else {
-			level = int(math.Round((v - min) / span * float64(steps-1)))
+			level = int(math.Round((v - min) / span * float64(yLevels-1)))
 		}
 		if level < 0 {
 			level = 0
 		}
-		if level >= steps {
-			level = steps - 1
+		if level >= yLevels {
+			level = yLevels - 1
 		}
-		// level が属する行(下が rows-1, 上が 0)と行内レベル
-		rowFromBottom := level / len(runes)
-		within := level % len(runes)
-		topRow := rows - 1 - rowFromBottom // 0=最上行
-		// 描画: topRow に部分ブロック、下の行(topRow+1..rows-1)は █、上は空白(初期値)
-		rowsBuf[topRow][c] = runes[within]
-		for r := topRow + 1; r < rows; r++ {
-			rowsBuf[r][c] = '█'
+		col := x % 2 // セル内左右(0=左, 1=右)
+		cellX := x / 2
+		if cellX >= width {
+			cellX = width - 1
+		}
+		// 高さ level から下のドットをすべて立てる(面塗り)
+		for h := 0; h <= level; h++ {
+			cellY := rows - 1 - h/4 // 0=最上行
+			rowInCell := 3 - h%4    // 下から数えた h を「セル内上→下」インデックスに変換
+			if cellY < 0 || cellY >= rows {
+				continue
+			}
+			cells[cellY][cellX] |= brailleDotBits[col][rowInCell]
 		}
 	}
-	for r := range rowsBuf {
-		out[r] = string(rowsBuf[r])
+
+	for r := 0; r < rows; r++ {
+		var b strings.Builder
+		for c := 0; c < width; c++ {
+			b.WriteRune(rune(brailleBase + cells[r][c]))
+		}
+		out[r] = b.String()
 	}
 	return out
 }
@@ -435,7 +503,7 @@ func getBoxChars(ascii bool) boxChars {
 // renderTile は1銘柄のタイルを行配列として返す。
 // outerW = タイル外形幅(枠線込み)、chartN = チャート行数。
 // 返り行数は chartN + 3(上枠 + 情報行 + チャートN行 + 下枠 ではなく、上枠+情報1+チャートN+下枠 = N+3)。
-func renderTile(item symbols.Item, r *fetcher.Result, outerW, chartN int, useColor, redGreen, ascii bool) []string {
+func renderTile(item symbols.Item, r *fetcher.Result, outerW, chartN int, useColor, redGreen, ascii, truecolor bool) []string {
 	if outerW < minTileW {
 		outerW = minTileW
 	}
@@ -476,7 +544,11 @@ func renderTile(item symbols.Item, r *fetcher.Result, outerW, chartN int, useCol
 	if r == nil {
 		na := padRight("N/A", contentW)
 		lines = append(lines, wrap(na))
-		blank := padRight("", contentW)
+		blank := strings.Repeat(string(rune(brailleBase)), contentW)
+		if ascii {
+			// ASCII フォールバックでも点字は維持(SPEC: 罫線だけ ASCII)
+			blank = strings.Repeat(string(rune(brailleBase)), contentW)
+		}
 		for i := 0; i < chartN; i++ {
 			lines = append(lines, wrap(blank))
 		}
@@ -487,44 +559,76 @@ func renderTile(item symbols.Item, r *fetcher.Result, outerW, chartN int, useCol
 	clr := colorFor(r.Change, useColor, redGreen)
 	priceS := fmtNum(r.Price, item.Decimals)
 	changeS := fmtChange(r.Change, item.Decimals)
-	pctS := arrow(r.Change) + fmtPct(r.ChangePct)
+	pctText := arrow(r.Change) + fmtPct(r.ChangePct)
+	// 前日比% バッジ: 前後空白1 + 太字白文字 + 騰落色背景
+	badge := buildBadge(pctText, r.Change, useColor, redGreen)
+	badgeW := stringWidth(" " + pctText + " ") // バッジの表示幅(背景込み)
 
-	// 情報行: 現在値(太字白)  前日比(騰落色)  ▲%(騰落色) を右寄せ気味に配置
-	// レイアウト: price <gap1> change <gap2> pct となるよう均等割り
-	plain := priceS + "  " + changeS + "  " + pctS
-	plainW := stringWidth(plain)
+	// 情報行: 現在値(太字白)  前日比(騰落色)  バッジ(右寄せ)
+	plainW := stringWidth(priceS) + 2 + stringWidth(changeS) + 2 + badgeW
 	if plainW <= contentW {
-		// 余白を price と change の間、change と pct の間に配分(右端に pct)
 		extra := contentW - plainW
 		gapL := extra / 2
 		gapR := extra - gapL
 		infoColored := wclr + priceS + rst +
 			strings.Repeat(" ", 2+gapL) + clr + changeS + rst +
-			strings.Repeat(" ", 2+gapR) + clr + pctS + rst
+			strings.Repeat(" ", 2+gapR) + badge
+		lines = append(lines, wrap(infoColored))
+	} else if stringWidth(priceS)+1+badgeW <= contentW {
+		// 収まらない場合は price と バッジのみ
+		gap := contentW - stringWidth(priceS) - badgeW
+		infoColored := wclr + priceS + rst + strings.Repeat(" ", gap) + badge
 		lines = append(lines, wrap(infoColored))
 	} else {
-		// 収まらない場合は price と pct のみ(change を省略)
-		alt := priceS + " " + pctS
-		if stringWidth(alt) > contentW {
-			alt = truncWidth(priceS, contentW)
-			infoColored := wclr + alt + rst
-			lines = append(lines, wrap(padPlainRight(infoColored, alt, contentW)))
-		} else {
-			gap := contentW - stringWidth(alt)
-			infoColored := wclr + priceS + rst + strings.Repeat(" ", gap+1) + clr + pctS + rst
-			lines = append(lines, wrap(infoColored))
-		}
+		alt := truncWidth(priceS, contentW)
+		infoColored := wclr + alt + rst
+		lines = append(lines, wrap(padPlainRight(infoColored, alt, contentW)))
 	}
 
-	// チャート行: 複数行スパークライン(騰落色)
-	rowsStr := SparklineRows(r.Series, contentW, chartN)
-	for _, rowStr := range rowsStr {
-		c := clr + rowStr + rst
+	// チャート行: 点字エリアチャート
+	rowsStr := BrailleRows(r.Series, contentW, chartN)
+	base := baseRGBFor(r.Change, redGreen)
+	for i, rowStr := range rowsStr {
+		var c string
+		switch {
+		case !useColor:
+			c = rowStr
+		case truecolor:
+			c = fg24(gradientRGB(base, i, len(rowsStr))) + rowStr + rst
+		default:
+			c = clr + rowStr + rst
+		}
 		lines = append(lines, wrap(c))
 	}
 
 	lines = append(lines, bottom)
 	return lines
+}
+
+// buildBadge は前日比% バッジ ' ▲+0.06% ' を生成する。
+// 騰落色の背景 + 太字白文字。下落=赤背景、変わらず=bright black 背景。
+// redGreen で背景色を反転。useColor=false なら従来の色なしテキスト。
+func buildBadge(text string, change float64, useColor, redGreen bool) string {
+	content := " " + text + " "
+	if !useColor {
+		return content
+	}
+	// 背景色 SGR コード
+	bgGreen, bgRed, bgGray := 42, 41, 100 // 100 = bright black bg
+	up, down := bgGreen, bgRed
+	if redGreen {
+		up, down = bgRed, bgGreen
+	}
+	var bg int
+	if change > 0 {
+		bg = up
+	} else if change < 0 {
+		bg = down
+	} else {
+		bg = bgGray
+	}
+	// 太字 + 白文字 + 背景色
+	return fmt.Sprintf("\033[1;37;%dm%s\033[0m", bg, content)
 }
 
 // padPlainRight は色エスケープ込み文字列 colored(表示は plain)を contentW に右パディングする。
@@ -572,6 +676,7 @@ func detectTermWidth() int {
 func RenderDashboard(data map[string]*fetcher.Result, sections []string, opt Options) string {
 	useColor := !opt.NoColor
 	ascii := opt.NoColor // 非カラー時は ASCII 罫線にフォールバック
+	truecolor := useColor && truecolorSupported()
 	termWidth := opt.TermWidth
 	termRows := opt.TermRows
 	if termWidth <= 0 {
@@ -646,7 +751,7 @@ func RenderDashboard(data map[string]*fetcher.Result, sections []string, opt Opt
 			var tiles [][]string
 			for ci, item := range rowItems {
 				w := colWidths[ci]
-				tiles = append(tiles, renderTile(item, data[item.Symbol], w, chartN, useColor, opt.RedGreen, ascii))
+				tiles = append(tiles, renderTile(item, data[item.Symbol], w, chartN, useColor, opt.RedGreen, ascii, truecolor))
 			}
 			// 行ごとに横連結(ギャップ0)
 			for li := 0; li < tileH; li++ {

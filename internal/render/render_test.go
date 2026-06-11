@@ -182,9 +182,8 @@ func TestChartRows(t *testing.T) {
 	}
 }
 
-func TestSparklineRows(t *testing.T) {
-	// 単調増加・2行: 行数2、各行幅5
-	rows := SparklineRows([]float64{1, 2, 3, 4, 5}, 5, 2)
+func TestBrailleRowsDimensions(t *testing.T) {
+	rows := BrailleRows([]float64{1, 2, 3, 4, 5}, 5, 2)
 	if len(rows) != 2 {
 		t.Fatalf("got %d rows, want 2", len(rows))
 	}
@@ -192,39 +191,148 @@ func TestSparklineRows(t *testing.T) {
 		if w := len([]rune(r)); w != 5 {
 			t.Errorf("row width: got %d, want 5", w)
 		}
-	}
-	// 最大値の列(最後)は下の行が█、上の行も埋まっているはず
-	bottom := []rune(rows[1])
-	if bottom[len(bottom)-1] != '█' {
-		t.Errorf("max column bottom row: got %q, want █", string(bottom[len(bottom)-1]))
-	}
-	// 最小値の列(最初)は下の行に部分ブロック、上の行は空白
-	top := []rune(rows[0])
-	if top[0] != ' ' {
-		t.Errorf("min column top row: got %q, want space", string(top[0]))
+		// すべて点字レンジ U+2800〜U+28FF
+		for _, ru := range r {
+			if ru < 0x2800 || ru > 0x28FF {
+				t.Errorf("rune %U out of braille range", ru)
+			}
+		}
 	}
 }
 
-func TestSparklineRowsEmpty(t *testing.T) {
-	rows := SparklineRows(nil, 4, 3)
+func TestBrailleRowsAreaFill(t *testing.T) {
+	// 単調増加: 最大値の x 点(右端)は最下行のセルがフル(全ドット立つ)に近い。
+	// 最大値の列の最下行は、下端のドット(dot3/dot6/dot7/dot8)が立つはず。
+	rows := BrailleRows([]float64{1, 2, 3, 4, 5, 6, 7, 8}, 4, 2)
+	bottom := []rune(rows[len(rows)-1])
+	last := bottom[len(bottom)-1]
+	bits := int(last) - 0x2800
+	// 最下段ドット(左列 dot3=0x04, dot7=0x40 / 右列 dot6=0x20, dot8=0x80)のいずれかが立つ
+	if bits&(0x04|0x40|0x20|0x80) == 0 {
+		t.Errorf("max column bottom cell has no bottom dots: %08b", bits)
+	}
+	// 最小値の列(左端)の最上行は空(全ドット消灯=U+2800)
+	top := []rune(rows[0])
+	if top[0] != 0x2800 {
+		t.Errorf("min column top cell should be empty, got %U", top[0])
+	}
+}
+
+func TestBrailleBitLayout(t *testing.T) {
+	// 単一点・最大高さ: 最下段から最上段まで1列が全部立つことを確認(面塗り)
+	// width=1, rows=1 → 2点 × 4段階。値を最大化して全ドットが立つことを確認。
+	rows := BrailleRows([]float64{0, 1}, 1, 1)
+	r := []rune(rows[0])[0]
+	bits := int(r) - 0x2800
+	// x=0 は値0(level=0、最下段のみ)、x=1 は値1(level=3、全段)
+	// 左列(x=0): 最下段ドット dot7=0x40。右列(x=1): dot4..dot8 全部 = 0x08|0x10|0x20|0x80
+	wantRight := 0x08 | 0x10 | 0x20 | 0x80
+	if bits&wantRight != wantRight {
+		t.Errorf("right column not fully filled: %08b", bits)
+	}
+	if bits&0x40 == 0 {
+		t.Errorf("left column bottom dot (dot7=0x40) not set: %08b", bits)
+	}
+}
+
+func TestBrailleQuantize(t *testing.T) {
+	// 下から上への量子化: 値が大きいほど高い段が立つ。
+	// rows=2 → 8段階。最大値の列は上段セルにもドットが及ぶ。
+	rows := BrailleRows([]float64{0, 10}, 1, 2)
+	topCell := []rune(rows[0])[0]
+	// 最大値 level=7 → h=7 まで立つ → cellY = 2-1-7/4 = 0(最上行)に到達
+	if topCell == 0x2800 {
+		t.Errorf("max value should reach top cell, got empty")
+	}
+}
+
+func TestBrailleRowsEmpty(t *testing.T) {
+	rows := BrailleRows(nil, 4, 3)
 	if len(rows) != 3 {
 		t.Fatalf("got %d rows, want 3", len(rows))
 	}
 	for _, r := range rows {
-		if strings.TrimSpace(r) != "" {
-			t.Errorf("empty series should yield blanks, got %q", r)
-		}
 		if len([]rune(r)) != 4 {
 			t.Errorf("blank row width: got %d, want 4", len([]rune(r)))
+		}
+		for _, ru := range r {
+			if ru != 0x2800 {
+				t.Errorf("empty series should yield U+2800, got %U", ru)
+			}
 		}
 	}
 }
 
-func TestSparklineRowsFlat(t *testing.T) {
-	// 全同値はパニックしない
-	rows := SparklineRows([]float64{5, 5, 5}, 3, 2)
+func TestBrailleRowsFlat(t *testing.T) {
+	// 全同値はパニックしない・点字レンジ内
+	rows := BrailleRows([]float64{5, 5, 5}, 3, 2)
 	if len(rows) != 2 {
-		t.Errorf("got %d rows", len(rows))
+		t.Fatalf("got %d rows", len(rows))
+	}
+	for _, r := range rows {
+		for _, ru := range r {
+			if ru < 0x2800 || ru > 0x28FF {
+				t.Errorf("rune out of braille range: %U", ru)
+			}
+		}
+	}
+}
+
+func TestGradientRGB(t *testing.T) {
+	base := [3]int{200, 100, 50}
+	// 最上行(row=0)は基準色そのまま
+	top := gradientRGB(base, 0, 4)
+	if top != base {
+		t.Errorf("top row should equal base: got %v", top)
+	}
+	// 最下行(row=rows-1)は約50%
+	bottom := gradientRGB(base, 3, 4)
+	want := [3]int{100, 50, 25}
+	if bottom != want {
+		t.Errorf("bottom row should be ~50%%: got %v, want %v", bottom, want)
+	}
+	// rows=1 はそのまま
+	if got := gradientRGB(base, 0, 1); got != base {
+		t.Errorf("single row: got %v", got)
+	}
+}
+
+func TestBadgeColorSwitching(t *testing.T) {
+	// no-color は色なしテキスト(前後空白1)
+	plain := buildBadge("▲+0.06%", 0.06, false, false)
+	if plain != " ▲+0.06% " {
+		t.Errorf("no-color badge: got %q", plain)
+	}
+	// 上昇は緑背景(42)、下落は赤背景(41)、変わらずは bright black(100)
+	if !strings.Contains(buildBadge("x", 1, true, false), "42m") {
+		t.Errorf("up badge should use green bg")
+	}
+	if !strings.Contains(buildBadge("x", -1, true, false), "41m") {
+		t.Errorf("down badge should use red bg")
+	}
+	if !strings.Contains(buildBadge("x", 0, true, false), "100m") {
+		t.Errorf("flat badge should use bright black bg")
+	}
+	// rg で背景反転: 上昇が赤背景
+	if !strings.Contains(buildBadge("x", 1, true, true), "41m") {
+		t.Errorf("rg up badge should use red bg")
+	}
+}
+
+func TestChartGradientSwitch(t *testing.T) {
+	r := &fetcher.Result{Price: 100, Change: 5, ChangePct: 1, Series: []float64{1, 2, 3, 4, 5}}
+	item := symbols.Item{Name: "X", Symbol: "X", Decimals: 2}
+	// truecolor 有効: チャート行に 38;2; を含む
+	tc := renderTile(item, r, 30, 3, true, false, false, true)
+	joinedTC := strings.Join(tc, "\n")
+	if !strings.Contains(joinedTC, "38;2;") {
+		t.Errorf("truecolor chart should contain 24bit fg escape")
+	}
+	// truecolor 無効: 単色(ESC[32m 緑)で 38;2; を含まない
+	sc := renderTile(item, r, 30, 3, true, false, false, false)
+	joinedSC := strings.Join(sc, "\n")
+	if strings.Contains(joinedSC, "38;2;") {
+		t.Errorf("single-color chart must not contain 24bit fg escape")
 	}
 }
 
@@ -269,7 +377,7 @@ func TestRenderDashboardNoBlankLines(t *testing.T) {
 
 func TestRenderTileNA(t *testing.T) {
 	item := symbols.Item{Name: "日経平均", Symbol: "^N225", Decimals: 2}
-	lines := renderTile(item, nil, 27, 2, false, false, true)
+	lines := renderTile(item, nil, 27, 2, false, false, true, false)
 	// 上枠+情報1+チャート2+下枠 = 5
 	if len(lines) != 5 {
 		t.Fatalf("expected 5 lines, got %d", len(lines))
@@ -285,7 +393,7 @@ func TestRenderTileNA(t *testing.T) {
 
 func TestRenderTileWithData(t *testing.T) {
 	r := &fetcher.Result{Price: 39500.50, PrevClose: 39000.0, Change: 500.50, ChangePct: 1.28, Time: "15:00", Series: []float64{1, 2, 3, 4}}
-	lines := renderTile(symbols.Item{Name: "日経平均", Symbol: "^N225", Decimals: 2}, r, 40, 2, false, false, true)
+	lines := renderTile(symbols.Item{Name: "日経平均", Symbol: "^N225", Decimals: 2}, r, 40, 2, false, false, true, false)
 	joined := strings.Join(lines, "\n")
 	if !strings.Contains(joined, "39,500.50") {
 		t.Errorf("missing price:\n%s", joined)
@@ -302,7 +410,7 @@ func TestRenderTileWithData(t *testing.T) {
 func TestRenderTileChartRows(t *testing.T) {
 	r := &fetcher.Result{Price: 100, Change: 1, ChangePct: 1, Series: []float64{1, 2, 3, 4, 5}}
 	for _, n := range []int{1, 4, 8} {
-		lines := renderTile(symbols.Item{Name: "X", Symbol: "X", Decimals: 2}, r, 30, n, false, false, true)
+		lines := renderTile(symbols.Item{Name: "X", Symbol: "X", Decimals: 2}, r, 30, n, false, false, true, false)
 		if len(lines) != n+3 {
 			t.Errorf("chartN=%d: expected %d lines, got %d", n, n+3, len(lines))
 		}
