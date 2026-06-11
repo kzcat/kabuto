@@ -1,56 +1,52 @@
-# 世界の株価 CLI (sekai-kabuka)
+# sekai-kabuka
 
-ターミナルで世界の株価指数・為替・暗号資産・商品先物を一覧表示するCLIツール。
+世界の株価 CLI — 世界の株価指数・為替・暗号資産・商品先物をターミナルに一覧表示
 
 ## インストール
 
 ```bash
-pip install -e .
+go install github.com/kaz/sekai-kabuka/cmd/sekai-kabuka@latest
+```
+
+## ビルド
+
+```bash
+git clone https://github.com/kaz/sekai-kabuka.git
+cd sekai-kabuka
+go build -o sekai-kabuka ./cmd/sekai-kabuka
 ```
 
 ## 使い方
 
 ```bash
 # 全セクション表示
-sekai-kabuka
+./sekai-kabuka
 
-# 日本と米国のみ
-sekai-kabuka -s japan -s us
+# 日本セクションのみ
+./sekai-kabuka -s japan
 
-# 30秒間隔で自動更新
-sekai-kabuka -w
+# 複数セクション
+./sekai-kabuka -s japan -s us
+
+# 自動更新(30秒間隔)
+./sekai-kabuka -w 30
 
 # JSON出力
-sekai-kabuka -j
+./sekai-kabuka -j
 
-# パッケージとして実行
-python3 -m sekai_kabuka
+# 色なし
+./sekai-kabuka --no-color
+
+# バージョン
+./sekai-kabuka -v
 ```
 
-## 表示例
+## セクション名
 
+`japan` / `us` / `us-futures` / `europe` / `asia` / `forex` / `crypto` / `commodity`
+
+## テスト
+
+```bash
+go test ./...
 ```
-更新: 2024-06-12 15:30:00 JST
-
-[ 日本 ]
-名称                   現在値       前日比    前日比%   時刻
------------------------------------------------------------------
-日経平均            39,500.50     +500.50    +1.28%  15:00
-日経先物(CME)       39,600.00     +100.00    +0.25%  06:00
-ドル円                155.123      +0.323    +0.21%  15:00
-```
-
-## オプション
-
-| オプション | 説明 |
-|---|---|
-| `-s`, `--section` | 表示セクション(japan/us/us-futures/europe/asia/forex/crypto/commodity) |
-| `-w`, `--watch [SEC]` | 自動更新(デフォルト30秒) |
-| `-j`, `--json` | JSON出力 |
-| `--no-color` | 色なし |
-| `-v`, `--version` | バージョン表示 |
-
-## 要件
-
-- Python 3.11+
-- 外部依存なし(標準ライブラリのみ)

@@ -5,12 +5,13 @@ https://sekai-kabuka.com (世界の株価) の CLI 版。
 
 ## 方針
 
-- **言語**: Python 3.11+、**外部依存なし**(標準ライブラリのみ。urllib / json / argparse / unittest)
+- **言語**: Go 1.22+、**外部依存なし**(標準ライブラリのみ。net/http / encoding/json / flag / sync)。単一バイナリ配布
 - **データソース**: Yahoo Finance 公開エンドポイント(API キー不要)
-  - `https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=2d`
+  - `https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=2d`(query2 優先、429 時は query1 にフォールバック)
   - レスポンスの `chart.result[0].meta` から `regularMarketPrice` / `chartPreviousClose` / `regularMarketTime` を取得
-  - User-Agent ヘッダ必須(ブラウザ風の UA を付けること。付けないと 429/403 になる)
-  - 取得は `concurrent.futures.ThreadPoolExecutor` で並列化(max_workers=8 程度)
+  - **User-Agent は素の `Mozilla/5.0` 固定**(検証済みの重要な知見: ブラウザ完全偽装 UA・curl UA・Go デフォルト UA は Yahoo 側で 429 になる。素の `Mozilla/5.0` のみ通る)
+  - シンボルは URL エンコードすること(`^N225` → `%5EN225`、`NKD=F` → `NKD%3DF`)
+  - 取得は goroutine で並列化(セマフォ等で同時 8 接続程度に制限)
   - 取得失敗した銘柄は `N/A` 表示で続行(全体を落とさない)
 
 ## 表示銘柄(セクション順も本サイトに準拠)
@@ -41,7 +42,7 @@ https://sekai-kabuka.com (世界の株価) の CLI 版。
 sekai-kabuka [options]
   (引数なし)            全セクションを1回表示して終了
   -s, --section NAME    指定セクションのみ表示(japan/us/us-futures/europe/asia/forex/crypto/commodity。複数指定可)
-  -w, --watch [SEC]     自動更新モード(デフォルト 30 秒間隔、Ctrl-C で終了。画面クリアして再描画)
+  -w, --watch SEC       自動更新モード(秒数指定必須・例 -w 30。0 で無効。Ctrl-C で終了。画面クリアして再描画)
   -j, --json            JSON で出力(色なし)
   --no-color            色なし
   -v, --version         バージョン表示
@@ -49,24 +50,33 @@ sekai-kabuka [options]
 
 ## ファイル構成
 
-```
+```text
 sekaino-kabuka/
 ├── SPEC.md
-├── README.md            # 使い方・スクリーンショット(テキスト例)・インストール方法
-├── pyproject.toml       # [project.scripts] sekai-kabuka = "sekai_kabuka.cli:main"
-├── src/sekai_kabuka/
-│   ├── __init__.py      # __version__
-│   ├── cli.py           # argparse・メインループ
-│   ├── fetcher.py       # Yahoo Finance 取得(並列)
-│   ├── symbols.py       # 上記銘柄定義(セクション・表示名・シンボル・小数桁)
-│   └── render.py        # テーブル描画・ANSI カラー・JSON 出力
-└── tests/
-    ├── test_render.py   # フォーマット・色分けのテスト(ネットワーク不要)
-    └── test_fetcher.py  # レスポンスパースのテスト(固定 JSON フィクスチャ使用、ネットワーク不要)
+├── README.md                # 使い方・出力例・インストール方法(go install / go build)
+├── go.mod                   # module github.com/kaz/sekai-kabuka
+├── cmd/sekai-kabuka/
+│   └── main.go              # flag パース・メインループ(watch 含む)
+└── internal/
+    ├── fetcher/
+    │   ├── fetcher.go       # Yahoo Finance 取得(goroutine 並列、query2→query1)
+    │   └── fetcher_test.go  # パースのテスト(httptest + 固定 JSON フィクスチャ、外部ネットワーク不要)
+    ├── symbols/
+    │   └── symbols.go       # 銘柄定義(セクション・表示名・シンボル・小数桁)
+    └── render/
+        ├── render.go        # テーブル描画・ANSI カラー・JSON 出力
+        └── render_test.go   # フォーマット・色分けのテスト(ネットワーク不要)
 ```
 
 ## 品質要件
 
-- テストはネットワークアクセスなしで `python3 -m pytest` または `python3 -m unittest` で通ること
-- `python3 -m sekai_kabuka` でも起動できること(`__main__.py`)
-- タイムアウト 10 秒、リトライ 1 回
+- テストは外部ネットワークアクセスなしで `go test ./...` で通ること(HTTP は `httptest.Server` でモック)
+- `go vet ./...` がクリーンであること
+- `go build -o sekai-kabuka ./cmd/sekai-kabuka` で単一バイナリが作れること
+- HTTP タイムアウト 10 秒、リトライ 1 回(エンドポイントフォールバック込み)
+- テーブル描画は日本語(全角)の表示幅を考慮して桁揃えすること(全角=2桁として計算)
+
+## 備考(Python 版からの移行)
+
+- 本リポジトリは当初 Python 実装だった。Go 移行に伴い `src/`, `tests/`, `pyproject.toml` は削除する
+- CLI インターフェース・表示仕様・銘柄構成は Python 版と完全互換を保つ
