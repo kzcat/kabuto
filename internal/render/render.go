@@ -28,9 +28,11 @@ var jst = time.FixedZone("JST", 9*3600)
 
 // Options は描画オプション
 type Options struct {
-	NoColor    bool // 色を使わない
-	RedGreen   bool // 上昇=赤/下落=緑 に反転(日本式)
-	TermWidth  int  // 端末幅(0なら自動取得)
+	NoColor   bool // 色を使わない
+	RedGreen  bool // 上昇=赤/下落=緑 に反転(日本式)
+	TermWidth int  // 端末幅(0なら自動取得)
+	TermRows  int  // 端末行数(0なら自動取得)
+	Watch     bool // watch 時は高さを使い切る
 }
 
 // UseColor は色を使うかどうか判定
@@ -271,6 +273,153 @@ func Sparkline(series []float64, width int) string {
 	return b.String()
 }
 
+// SparklineRows は数値系列から N 行の複数行スパークラインを生成する。
+// 系列を width 列にダウンサンプルし、各列の値を rows*8 段階に量子化する。
+// レベルを含む行に部分ブロック(▁▂▃▄▅▆▇█)、それより下の行は █、上は空白で描く。
+// 返り値は上から下へ rows 行(各行 width 文字)。
+func SparklineRows(series []float64, width, rows int) []string {
+	if rows < 1 {
+		rows = 1
+	}
+	if width < 1 {
+		width = 1
+	}
+	out := make([]string, rows)
+	if len(series) == 0 {
+		blank := strings.Repeat(" ", width)
+		for i := range out {
+			out[i] = blank
+		}
+		return out
+	}
+	runes := []rune(sparkRunes) // 8段階
+	// width 列にダウンサンプル
+	pts := make([]float64, width)
+	if len(series) == 1 {
+		for i := range pts {
+			pts[i] = series[0]
+		}
+	} else if len(series) >= width {
+		for i := 0; i < width; i++ {
+			idx := i * (len(series) - 1) / (width - 1)
+			if width == 1 {
+				idx = len(series) - 1
+			}
+			pts[i] = series[idx]
+		}
+	} else {
+		// 系列が幅より短い場合も等間隔マッピング(値を引き伸ばす)
+		for i := 0; i < width; i++ {
+			idx := i * (len(series) - 1) / (width - 1)
+			if width == 1 {
+				idx = len(series) - 1
+			}
+			pts[i] = series[idx]
+		}
+	}
+	min, max := pts[0], pts[0]
+	for _, v := range pts {
+		if v < min {
+			min = v
+		}
+		if v > max {
+			max = v
+		}
+	}
+	span := max - min
+	steps := rows * len(runes) // 総段階数
+	// 各列の量子化レベル(0..steps-1)
+	rowsBuf := make([][]rune, rows)
+	for r := range rowsBuf {
+		rowsBuf[r] = make([]rune, width)
+		for c := range rowsBuf[r] {
+			rowsBuf[r][c] = ' '
+		}
+	}
+	for c, v := range pts {
+		var level int
+		if span == 0 {
+			level = 0 // フラットは最下行の最低ブロック
+		} else {
+			level = int(math.Round((v - min) / span * float64(steps-1)))
+		}
+		if level < 0 {
+			level = 0
+		}
+		if level >= steps {
+			level = steps - 1
+		}
+		// level が属する行(下が rows-1, 上が 0)と行内レベル
+		rowFromBottom := level / len(runes)
+		within := level % len(runes)
+		topRow := rows - 1 - rowFromBottom // 0=最上行
+		// 描画: topRow に部分ブロック、下の行(topRow+1..rows-1)は █、上は空白(初期値)
+		rowsBuf[topRow][c] = runes[within]
+		for r := topRow + 1; r < rows; r++ {
+			rowsBuf[r][c] = '█'
+		}
+	}
+	for r := range rowsBuf {
+		out[r] = string(rowsBuf[r])
+	}
+	return out
+}
+
+const minTileW = 24 // 最小タイル外形幅(全角=2考慮済み)
+
+// distributeWidths は端末幅を cols 列に配分する。
+// 基本幅 = termWidth/cols、余り桁は左の列から1桁ずつ配って合計が termWidth に一致するようにする。
+// 返り値は各列のタイル外形幅。
+func distributeWidths(termWidth, cols int) []int {
+	if cols < 1 {
+		cols = 1
+	}
+	base := termWidth / cols
+	rem := termWidth % cols
+	widths := make([]int, cols)
+	for i := range widths {
+		widths[i] = base
+		if i < rem {
+			widths[i]++
+		}
+	}
+	return widths
+}
+
+// gridColumns は端末幅からタイルの列数を計算する(最小タイル幅 minTileW)。
+func gridColumns(termWidth int) int {
+	if termWidth <= 0 {
+		termWidth = 80
+	}
+	cols := termWidth / minTileW
+	if cols < 1 {
+		cols = 1
+	}
+	return cols
+}
+
+// chartRows は watch 時の端末行数からチャート行数 N を計算する。
+// tileRows = (termRows - header(1) - sectionTitles) / rowsOfTiles
+// N = tileRows - 3(上下枠 + 情報行)。下限1・上限8。非watch(termRows<=0)は N=2。
+func chartRows(termRows, headerLines, totalTileRows int) int {
+	if termRows <= 0 || totalTileRows <= 0 {
+		return 2
+	}
+	avail := termRows - headerLines
+	if avail < 1 {
+		avail = 1
+	}
+	tileH := avail / totalTileRows
+	n := tileH - 3
+	if n < 1 {
+		n = 1
+	}
+	if n > 8 {
+		n = 8
+	}
+	return n
+}
+
 // 罫線文字セット
 type boxChars struct {
 	tl, tr, bl, br, h, v string
@@ -283,11 +432,19 @@ func getBoxChars(ascii bool) boxChars {
 	return boxChars{"┌", "┐", "└", "┘", "─", "│"}
 }
 
-const tileInnerW = 25 // タイル内側の表示幅
-const tileOuterW = tileInnerW + 2
+// renderTile は1銘柄のタイルを行配列として返す。
+// outerW = タイル外形幅(枠線込み)、chartN = チャート行数。
+// 返り行数は chartN + 3(上枠 + 情報行 + チャートN行 + 下枠 ではなく、上枠+情報1+チャートN+下枠 = N+3)。
+func renderTile(item symbols.Item, r *fetcher.Result, outerW, chartN int, useColor, redGreen, ascii bool) []string {
+	if outerW < minTileW {
+		outerW = minTileW
+	}
+	if chartN < 1 {
+		chartN = 1
+	}
+	innerW := outerW - 2 // 枠線2桁を除いた内側幅
+	contentW := innerW - 2 // 左右1桁ずつの余白を除いた内容幅
 
-// renderTile は1銘柄のタイルを行配列として返す。色付けはエスケープ込み。
-func renderTile(item symbols.Item, r *fetcher.Result, useColor, redGreen, ascii bool) []string {
 	bc := getBoxChars(ascii)
 	border := brightBlk
 	wclr := boldWhite
@@ -297,83 +454,118 @@ func renderTile(item symbols.Item, r *fetcher.Result, useColor, redGreen, ascii 
 	}
 
 	// 見出し付き上辺: ┌─ 名称 ─...─┐
-	name := truncWidth(item.Name, tileInnerW-4)
+	name := truncWidth(item.Name, innerW-4)
 	nameW := stringWidth(name)
-	dashAfter := tileInnerW - 2 - nameW - 1 // "─ " と name の後
+	dashAfter := innerW - 2 - nameW - 1 // "─ " と name の後の余白
 	if dashAfter < 0 {
 		dashAfter = 0
 	}
 	top := border + bc.tl + bc.h + " " + name + " " + strings.Repeat(bc.h, dashAfter) + bc.tr + rst
-
-	bottom := border + bc.bl + strings.Repeat(bc.h, tileInnerW) + bc.br + rst
+	bottom := border + bc.bl + strings.Repeat(bc.h, innerW) + bc.br + rst
 
 	left := border + bc.v + rst
 	right := border + bc.v + rst
 
-	var line1, line2, line3 string
+	wrap := func(inner string) string {
+		return left + " " + inner + " " + right
+	}
+
+	lines := make([]string, 0, chartN+3)
+	lines = append(lines, top)
+
 	if r == nil {
-		na := padRight("N/A", tileInnerW-2)
-		line1 = left + " " + na + " " + right
-		line2 = left + " " + padRight("", tileInnerW-2) + " " + right
-		line3 = left + " " + padRight("", tileInnerW-2) + " " + right
-		return []string{top, line1, line2, line3, bottom}
+		na := padRight("N/A", contentW)
+		lines = append(lines, wrap(na))
+		blank := padRight("", contentW)
+		for i := 0; i < chartN; i++ {
+			lines = append(lines, wrap(blank))
+		}
+		lines = append(lines, bottom)
+		return lines
 	}
 
 	clr := colorFor(r.Change, useColor, redGreen)
 	priceS := fmtNum(r.Price, item.Decimals)
-	pctS := arrow(r.Change) + fmtPct(r.ChangePct)
 	changeS := fmtChange(r.Change, item.Decimals)
-	timeS := r.Time
+	pctS := arrow(r.Change) + fmtPct(r.ChangePct)
 
-	// 行1: 現在値(左, 太字白) ... 前日比%(右, 騰落色)
-	gap1 := tileInnerW - 2 - stringWidth(priceS) - stringWidth(pctS)
-	if gap1 < 1 {
-		gap1 = 1
+	// 情報行: 現在値(太字白)  前日比(騰落色)  ▲%(騰落色) を右寄せ気味に配置
+	// レイアウト: price <gap1> change <gap2> pct となるよう均等割り
+	plain := priceS + "  " + changeS + "  " + pctS
+	plainW := stringWidth(plain)
+	if plainW <= contentW {
+		// 余白を price と change の間、change と pct の間に配分(右端に pct)
+		extra := contentW - plainW
+		gapL := extra / 2
+		gapR := extra - gapL
+		infoColored := wclr + priceS + rst +
+			strings.Repeat(" ", 2+gapL) + clr + changeS + rst +
+			strings.Repeat(" ", 2+gapR) + clr + pctS + rst
+		lines = append(lines, wrap(infoColored))
+	} else {
+		// 収まらない場合は price と pct のみ(change を省略)
+		alt := priceS + " " + pctS
+		if stringWidth(alt) > contentW {
+			alt = truncWidth(priceS, contentW)
+			infoColored := wclr + alt + rst
+			lines = append(lines, wrap(padPlainRight(infoColored, alt, contentW)))
+		} else {
+			gap := contentW - stringWidth(alt)
+			infoColored := wclr + priceS + rst + strings.Repeat(" ", gap+1) + clr + pctS + rst
+			lines = append(lines, wrap(infoColored))
+		}
 	}
-	c1 := wclr + priceS + rst + strings.Repeat(" ", gap1) + clr + pctS + rst
-	line1 = left + " " + c1 + " " + right
 
-	// 行2: 前日比(左, 騰落色) ... 時刻(右)
-	gap2 := tileInnerW - 2 - stringWidth(changeS) - stringWidth(timeS)
-	if gap2 < 1 {
-		gap2 = 1
+	// チャート行: 複数行スパークライン(騰落色)
+	rowsStr := SparklineRows(r.Series, contentW, chartN)
+	for _, rowStr := range rowsStr {
+		c := clr + rowStr + rst
+		lines = append(lines, wrap(c))
 	}
-	c2 := clr + changeS + rst + strings.Repeat(" ", gap2) + timeS
-	line2 = left + " " + c2 + " " + right
 
-	// 行3: スパークライン(騰落色)
-	spark := Sparkline(r.Series, tileInnerW-2)
-	spark = padRight(spark, tileInnerW-2)
-	c3 := clr + spark + rst
-	line3 = left + " " + c3 + " " + right
-
-	return []string{top, line1, line2, line3, bottom}
+	lines = append(lines, bottom)
+	return lines
 }
 
-// gridColumns は端末幅からタイルの列数を計算する(全角=2考慮済みの固定タイル幅)
-func gridColumns(termWidth int) int {
-	if termWidth <= 0 {
-		termWidth = 80
+// padPlainRight は色エスケープ込み文字列 colored(表示は plain)を contentW に右パディングする。
+func padPlainRight(colored, plain string, contentW int) string {
+	pad := contentW - stringWidth(plain)
+	if pad < 0 {
+		pad = 0
 	}
-	cols := termWidth / tileOuterW
-	if cols < 1 {
-		cols = 1
+	return colored + strings.Repeat(" ", pad)
+}
+
+// detectTermSize は端末の桁数・行数を取得する。
+func detectTermSize() (cols, rows int) {
+	cols, rows = ioctlSize()
+	if c := os.Getenv("COLUMNS"); c != "" {
+		var w int
+		if _, err := fmt.Sscanf(c, "%d", &w); err == nil && w > 0 {
+			cols = w
+		}
 	}
-	return cols
+	if l := os.Getenv("LINES"); l != "" {
+		var h int
+		if _, err := fmt.Sscanf(l, "%d", &h); err == nil && h > 0 {
+			rows = h
+		}
+	}
+	if cols <= 0 {
+		cols = 80
+	}
+	return cols, rows
+}
+
+// DetectTermSize は端末の桁数・行数を公開する(main から利用)。
+func DetectTermSize() (cols, rows int) {
+	return detectTermSize()
 }
 
 // detectTermWidth は $COLUMNS または ioctl から端末幅を取得する。不可なら 80。
 func detectTermWidth() int {
-	if c := os.Getenv("COLUMNS"); c != "" {
-		var w int
-		if _, err := fmt.Sscanf(c, "%d", &w); err == nil && w > 0 {
-			return w
-		}
-	}
-	if w := ioctlWidth(); w > 0 {
-		return w
-	}
-	return 80
+	c, _ := detectTermSize()
+	return c
 }
 
 // RenderDashboard は本家サイト風ダッシュボードを生成する
@@ -381,29 +573,52 @@ func RenderDashboard(data map[string]*fetcher.Result, sections []string, opt Opt
 	useColor := !opt.NoColor
 	ascii := opt.NoColor // 非カラー時は ASCII 罫線にフォールバック
 	termWidth := opt.TermWidth
+	termRows := opt.TermRows
 	if termWidth <= 0 {
 		termWidth = detectTermWidth()
 	}
 	cols := gridColumns(termWidth)
+	colWidths := distributeWidths(termWidth, cols)
 
 	keys := sections
 	if len(keys) == 0 {
 		keys = symbols.SectionOrder
 	}
 
+	// チャート行数 N の決定
+	chartN := 2
+	if opt.Watch {
+		// 全タイル段数 = 各セクションの (タイル数 / cols 切り上げ) の合計
+		totalTileRows := 0
+		for _, secKey := range keys {
+			sec := symbols.Sections[secKey]
+			n := len(sec.Items)
+			rows := (n + cols - 1) / cols
+			totalTileRows += rows
+		}
+		headerLines := 1 + len(keys) // ヘッダー1行 + セクション見出し行数
+		chartN = chartRows(termRows, headerLines, totalTileRows)
+	}
+
 	var lines []string
 	now := time.Now().In(jst).Format("2006-01-02 15:04:05 JST")
-	// ascii モードでも日本語は表示できる前提(罫線のみフォールバック対象)
 	header := "世界の株価 ─ sekai-kabuka CLI    更新: " + now
 	if ascii {
 		header = "世界の株価 - sekai-kabuka CLI    更新: " + now
 	}
 	if useColor {
-		lines = append(lines, reverse+" "+header+" "+reset)
+		// 端末幅まで反転を伸ばす
+		h := truncWidth(header, termWidth)
+		hw := stringWidth(h)
+		pad := termWidth - hw
+		if pad < 0 {
+			pad = 0
+		}
+		lines = append(lines, reverse+h+strings.Repeat(" ", pad)+reset)
 	} else {
-		lines = append(lines, header)
+		lines = append(lines, truncWidth(header, termWidth))
 	}
-	lines = append(lines, "")
+	// ヘッダー直後の空行は入れない
 
 	for _, secKey := range keys {
 		sec := symbols.Sections[secKey]
@@ -412,32 +627,37 @@ func RenderDashboard(data map[string]*fetcher.Result, sections []string, opt Opt
 			title = "# " + sec.Title
 		}
 		if useColor {
-			lines = append(lines, bold+title+reset)
+			lines = append(lines, brightBlk+truncWidth(title, termWidth)+reset)
 		} else {
-			lines = append(lines, title)
+			lines = append(lines, truncWidth(title, termWidth))
 		}
+		// 見出し直後の空行は入れない
 
-		// セクションのタイルを cols 列のグリッドに並べる
-		var tiles [][]string
-		for _, item := range sec.Items {
-			tiles = append(tiles, renderTile(item, data[item.Symbol], useColor, opt.RedGreen, ascii))
-		}
-		for i := 0; i < len(tiles); i += cols {
+		// cols 列のグリッドに並べる。各行で列幅 colWidths を使う。
+		items := sec.Items
+		tileH := chartN + 3 // 上枠+情報1+チャートN+下枠
+		for i := 0; i < len(items); i += cols {
 			end := i + cols
-			if end > len(tiles) {
-				end = len(tiles)
+			if end > len(items) {
+				end = len(items)
 			}
-			row := tiles[i:end]
-			// 各タイルは5行。行ごとに横連結
-			for li := 0; li < 5; li++ {
+			rowItems := items[i:end]
+			// この行の各タイルを生成(列ごとに幅が異なる)
+			var tiles [][]string
+			for ci, item := range rowItems {
+				w := colWidths[ci]
+				tiles = append(tiles, renderTile(item, data[item.Symbol], w, chartN, useColor, opt.RedGreen, ascii))
+			}
+			// 行ごとに横連結(ギャップ0)
+			for li := 0; li < tileH; li++ {
 				var parts []string
-				for _, t := range row {
+				for _, t := range tiles {
 					parts = append(parts, t[li])
 				}
-				lines = append(lines, strings.Join(parts, " "))
+				lines = append(lines, strings.Join(parts, ""))
 			}
 		}
-		lines = append(lines, "")
+		// セクション間の空行は入れない
 	}
 	return strings.Join(lines, "\n")
 }

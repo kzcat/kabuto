@@ -95,32 +95,31 @@ func main() {
 
 	opt := render.Options{NoColor: noColor, RedGreen: redGreen}
 
-	frame := func() string {
+	if watchSec > 0 && !jsonOut {
+		runWatch(watchSec, collectSymbols, []string(sections), opt)
+	} else {
 		syms := collectSymbols()
 		data := fetcher.FetchAll(syms)
 		if jsonOut {
-			return render.RenderJSON(data, sections)
+			fmt.Println(render.RenderJSON(data, sections))
+		} else {
+			// 非 watch: N=2 固定(Watch=false)。幅は自動取得。
+			fmt.Println(render.RenderDashboard(data, sections, opt))
 		}
-		return render.RenderDashboard(data, sections, opt)
-	}
-
-	if watchSec > 0 && !jsonOut {
-		runWatch(watchSec, frame)
-	} else {
-		fmt.Println(frame())
 	}
 }
 
 // runWatch はちらつき解消版の自動更新ループ。
 // 代替スクリーンバッファ+カーソル非表示で開始し、SIGINT/SIGTERM で必ず復元する。
-func runWatch(sec int, frame func() string) {
+// SIGWINCH を捕捉し、リサイズ時は再取得せず直近データで即再描画する。
+func runWatch(sec int, collect func() []string, sections []string, opt render.Options) {
 	out := os.Stdout
 
 	restore := func() {
 		fmt.Fprint(out, showCur+leaveAlt)
 	}
 
-	// シグナル捕捉して画面状態を復元
+	// SIGINT/SIGTERM で画面復元して終了
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
@@ -129,12 +128,15 @@ func runWatch(sec int, frame func() string) {
 		os.Exit(0)
 	}()
 
+	// SIGWINCH(端末リサイズ)を捕捉
+	winCh := make(chan os.Signal, 1)
+	signal.Notify(winCh, syscall.SIGWINCH)
+
 	fmt.Fprint(out, enterAlt+hideCur)
 	defer restore()
 
 	render1 := func(content string) {
-		// 画面クリアのエスケープは使わず、ESC[H から1バッファに構築。
-		// 各行末に ESC[K、最後に ESC[J を付けて1回の Write で出力。
+		// 画面クリアせず ESC[H から1バッファに構築。各行末に ESC[K、最後に ESC[J。
 		var b strings.Builder
 		b.WriteString(cursorTop)
 		lines := strings.Split(content, "\n")
@@ -149,10 +151,34 @@ func runWatch(sec int, frame func() string) {
 		fmt.Fprint(out, b.String())
 	}
 
+	// 直近データをキャッシュしてリサイズ時に再利用する
+	var lastData map[string]*fetcher.Result
+
+	draw := func() {
+		// 毎フレーム描画前に端末サイズを取り直す
+		cols, rows := render.DetectTermSize()
+		o := opt
+		o.TermWidth = cols
+		o.TermRows = rows
+		o.Watch = true
+		render1(render.RenderDashboard(lastData, sections, o))
+	}
+
+	// 初回取得
+	lastData = fetcher.FetchAll(collect())
+	draw()
+
+	ticker := time.NewTicker(time.Duration(sec) * time.Second)
+	defer ticker.Stop()
 	for {
-		// データ取得中も前フレームは表示したまま。取得完了後に一括差し替え。
-		content := frame()
-		render1(content)
-		time.Sleep(time.Duration(sec) * time.Second)
+		select {
+		case <-winCh:
+			// リサイズ: 再取得せず直近データで即再描画
+			draw()
+		case <-ticker.C:
+			// 周期更新: 取得中も前フレーム表示のまま、取得後に差し替え
+			lastData = fetcher.FetchAll(collect())
+			draw()
+		}
 	}
 }
