@@ -16,8 +16,8 @@ const (
 )
 
 var baseURLs = []string{
-	"https://query2.finance.yahoo.com/v8/finance/chart/%s?interval=1d&range=2d",
-	"https://query1.finance.yahoo.com/v8/finance/chart/%s?interval=1d&range=2d",
+	"https://query2.finance.yahoo.com/v8/finance/chart/%s?interval=5m&range=1d",
+	"https://query1.finance.yahoo.com/v8/finance/chart/%s?interval=5m&range=1d",
 }
 
 // Result は1銘柄の取得結果
@@ -27,6 +27,7 @@ type Result struct {
 	Change    float64
 	ChangePct float64
 	Time      string
+	Series    []float64 // intraday の終値系列(null は前値で補間)
 }
 
 // BaseURLOverride はテスト用にURLを差し替えるためのフック
@@ -49,8 +50,29 @@ type chartResponse struct {
 				ChartPreviousClose float64 `json:"chartPreviousClose"`
 				RegularMarketTime  int64   `json:"regularMarketTime"`
 			} `json:"meta"`
+			Indicators struct {
+				Quote []struct {
+					Close []*float64 `json:"close"`
+				} `json:"quote"`
+			} `json:"indicators"`
 		} `json:"result"`
 	} `json:"chart"`
+}
+
+// buildSeries は close 系列の null を前値で補間して []float64 にする
+func buildSeries(raw []*float64, fallback float64) []float64 {
+	series := make([]float64, 0, len(raw))
+	prev := fallback
+	for _, v := range raw {
+		if v != nil {
+			prev = *v
+			series = append(series, *v)
+		} else if len(series) > 0 || prev != 0 {
+			// null は前値で補間
+			series = append(series, prev)
+		}
+	}
+	return series
 }
 
 func fetchOne(symbol string, client *http.Client) *Result {
@@ -84,12 +106,17 @@ func fetchOne(symbol string, client *http.Client) *Result {
 			pct = change / meta.ChartPreviousClose * 100
 		}
 		t := time.Unix(meta.RegularMarketTime, 0).In(jst)
+		var series []float64
+		if len(cr.Chart.Result[0].Indicators.Quote) > 0 {
+			series = buildSeries(cr.Chart.Result[0].Indicators.Quote[0].Close, meta.ChartPreviousClose)
+		}
 		return &Result{
 			Price:     meta.RegularMarketPrice,
 			PrevClose: meta.ChartPreviousClose,
 			Change:    change,
 			ChangePct: pct,
 			Time:      t.Format("15:04"),
+			Series:    series,
 		}
 	}
 	return nil

@@ -13,6 +13,11 @@ const fixtureJSON = `{
         "regularMarketPrice": 39500.5,
         "chartPreviousClose": 39000.0,
         "regularMarketTime": 1718100000
+      },
+      "indicators": {
+        "quote": [{
+          "close": [39100.0, null, 39300.0, 39500.5]
+        }]
       }
     }]
   }
@@ -45,6 +50,48 @@ func TestFetchOne(t *testing.T) {
 	expectedChange := 500.5
 	if r.Change != expectedChange {
 		t.Errorf("change: got %f, want %f", r.Change, expectedChange)
+	}
+}
+
+func TestFetchOneSeries(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		w.Write([]byte(fixtureJSON))
+	}))
+	defer ts.Close()
+
+	BaseURLOverride = []string{ts.URL + "/%s"}
+	defer func() { BaseURLOverride = nil }()
+
+	r := fetchOne("^N225", &http.Client{})
+	if r == nil {
+		t.Fatal("expected result")
+	}
+	// close は [39100, null, 39300, 39500.5] → null は前値 39100 で補間
+	want := []float64{39100.0, 39100.0, 39300.0, 39500.5}
+	if len(r.Series) != len(want) {
+		t.Fatalf("series length: got %d, want %d (%v)", len(r.Series), len(want), r.Series)
+	}
+	for i := range want {
+		if r.Series[i] != want[i] {
+			t.Errorf("series[%d]: got %f, want %f", i, r.Series[i], want[i])
+		}
+	}
+}
+
+func TestBuildSeriesInterpolation(t *testing.T) {
+	f := func(v float64) *float64 { return &v }
+	raw := []*float64{nil, f(10), nil, nil, f(20)}
+	// 先頭 null は fallback(100)で補間、以降は前値で補間
+	got := buildSeries(raw, 100)
+	want := []float64{100, 10, 10, 10, 20}
+	if len(got) != len(want) {
+		t.Fatalf("length: got %d want %d (%v)", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("[%d]: got %f want %f", i, got[i], want[i])
+		}
 	}
 }
 

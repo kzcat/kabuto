@@ -4,7 +4,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/kaz/sekai-kabuka/internal/fetcher"
@@ -12,7 +14,17 @@ import (
 	"github.com/kaz/sekai-kabuka/internal/symbols"
 )
 
-var version = "0.1.0"
+var version = "0.2.0"
+
+const (
+	enterAlt  = "\033[?1049h"
+	leaveAlt  = "\033[?1049l"
+	hideCur   = "\033[?25l"
+	showCur   = "\033[?25h"
+	cursorTop = "\033[H"
+	clrLine   = "\033[K" // 行末まで消去
+	clrBelow  = "\033[J" // 画面末尾まで消去
+)
 
 type sectionFlag []string
 
@@ -34,6 +46,7 @@ func main() {
 	var watchSec int
 	var jsonOut bool
 	var noColor bool
+	var redGreen bool
 	var showVersion bool
 
 	flag.Var(&sections, "s", "表示セクション(複数指定可)")
@@ -43,6 +56,7 @@ func main() {
 	flag.BoolVar(&jsonOut, "j", false, "JSON出力")
 	flag.BoolVar(&jsonOut, "json", false, "JSON出力")
 	flag.BoolVar(&noColor, "no-color", false, "色なし")
+	flag.BoolVar(&redGreen, "rg", false, "上昇=赤/下落=緑 に反転(日本式)")
 	flag.BoolVar(&showVersion, "v", false, "バージョン表示")
 	flag.BoolVar(&showVersion, "version", false, "バージョン表示")
 	flag.Parse()
@@ -53,6 +67,10 @@ func main() {
 	}
 
 	if jsonOut {
+		noColor = true
+	}
+	// パイプ時(非TTY)は色なし・ASCIIフォールバック
+	if !render.UseColor(noColor) {
 		noColor = true
 	}
 
@@ -75,23 +93,66 @@ func main() {
 		return syms
 	}
 
-	runOnce := func() {
+	opt := render.Options{NoColor: noColor, RedGreen: redGreen}
+
+	frame := func() string {
 		syms := collectSymbols()
 		data := fetcher.FetchAll(syms)
 		if jsonOut {
-			fmt.Println(render.RenderJSON(data, sections))
-		} else {
-			fmt.Println(render.RenderTable(data, sections, noColor))
+			return render.RenderJSON(data, sections)
 		}
+		return render.RenderDashboard(data, sections, opt)
 	}
 
-	if watchSec > 0 {
-		for {
-			fmt.Print("\033[2J\033[H")
-			runOnce()
-			time.Sleep(time.Duration(watchSec) * time.Second)
-		}
+	if watchSec > 0 && !jsonOut {
+		runWatch(watchSec, frame)
 	} else {
-		runOnce()
+		fmt.Println(frame())
+	}
+}
+
+// runWatch はちらつき解消版の自動更新ループ。
+// 代替スクリーンバッファ+カーソル非表示で開始し、SIGINT/SIGTERM で必ず復元する。
+func runWatch(sec int, frame func() string) {
+	out := os.Stdout
+
+	restore := func() {
+		fmt.Fprint(out, showCur+leaveAlt)
+	}
+
+	// シグナル捕捉して画面状態を復元
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		restore()
+		os.Exit(0)
+	}()
+
+	fmt.Fprint(out, enterAlt+hideCur)
+	defer restore()
+
+	render1 := func(content string) {
+		// 画面クリアのエスケープは使わず、ESC[H から1バッファに構築。
+		// 各行末に ESC[K、最後に ESC[J を付けて1回の Write で出力。
+		var b strings.Builder
+		b.WriteString(cursorTop)
+		lines := strings.Split(content, "\n")
+		for i, ln := range lines {
+			b.WriteString(ln)
+			b.WriteString(clrLine)
+			if i < len(lines)-1 {
+				b.WriteString("\r\n")
+			}
+		}
+		b.WriteString(clrBelow)
+		fmt.Fprint(out, b.String())
+	}
+
+	for {
+		// データ取得中も前フレームは表示したまま。取得完了後に一括差し替え。
+		content := frame()
+		render1(content)
+		time.Sleep(time.Duration(sec) * time.Second)
 	}
 }
