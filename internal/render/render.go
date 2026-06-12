@@ -34,11 +34,12 @@ var jst = time.FixedZone("JST", 9*3600)
 
 // Options は描画オプション
 type Options struct {
-	NoColor   bool // 色を使わない
-	RedGreen  bool // 上昇=赤/下落=緑 に反転(日本式)
-	TermWidth int  // 端末幅(0なら自動取得)
-	TermRows  int  // 端末行数(0なら自動取得)
-	Watch     bool // watch 時は高さを使い切る
+	NoColor    bool // 色を使わない
+	RedGreen   bool // 上昇=赤/下落=緑 に反転(日本式)
+	TermWidth  int  // 端末幅(0なら自動取得)
+	TermRows   int  // 端末行数(0なら自動取得)
+	Watch      bool // watch 時は高さを使い切る
+	FillHeight bool // stdout が TTY のとき高さを使い切る(非watchの1回表示でも適用)
 }
 
 // UseColor は色を使うかどうか判定
@@ -466,9 +467,9 @@ func gridColumns(termWidth int) int {
 	return cols
 }
 
-// chartRows は watch 時の端末行数からチャート行数 N を計算する。
+// chartRows は端末行数からチャート行数 N(全段共通の基準値)を計算する。
 // tileRows = (termRows - header(1) - sectionTitles) / rowsOfTiles
-// N = tileRows - 3(上下枠 + 情報行)。下限1・上限8。非watch(termRows<=0)は N=2。
+// N = tileRows - 3(上下枠 + 情報行)。下限1・上限12。termRows<=0 は N=2(高さ計算なし)。
 func chartRows(termRows, headerLines, totalTileRows int) int {
 	if termRows <= 0 || totalTileRows <= 0 {
 		return 2
@@ -482,10 +483,55 @@ func chartRows(termRows, headerLines, totalTileRows int) int {
 	if n < 1 {
 		n = 1
 	}
-	if n > 8 {
-		n = 8
+	if n > 12 {
+		n = 12
 	}
 	return n
+}
+
+const (
+	chartNMin = 1
+	chartNMax = 12
+)
+
+// chartRowsPerStage は端末行数を totalTileRows 段に配分し、各段(上→下)のチャート行数 N を返す。
+// 基準 N = tileH - 3(tileH = avail / totalTileRows)。均等割りで余った行数は、
+// 上の段から順に 1 段につき 1 行ずつ N に加算して最終行が画面下端に届くようにする(余白行を残さない)。
+// 下限 1・上限 12。N 上限とタイル段数の制約で配り切れない余りは残す。
+func chartRowsPerStage(termRows, headerLines, totalTileRows int) []int {
+	if totalTileRows <= 0 {
+		return nil
+	}
+	out := make([]int, totalTileRows)
+	if termRows <= 0 {
+		// 非TTY(高さ計算なし): N=2 固定
+		for i := range out {
+			out[i] = 2
+		}
+		return out
+	}
+	avail := termRows - headerLines
+	if avail < 1 {
+		avail = 1
+	}
+	tileH := avail / totalTileRows
+	rem := avail % totalTileRows // タイル高さの均等割りで余った行数(=配り切れていない下端の行)
+	baseN := tileH - 3
+	if baseN < chartNMin {
+		baseN = chartNMin
+	}
+	if baseN > chartNMax {
+		baseN = chartNMax
+	}
+	for i := range out {
+		n := baseN
+		// 余り行を上の段から 1 段 1 行ずつ加算(上限 12 を超えない範囲)
+		if i < rem && n < chartNMax {
+			n++
+		}
+		out[i] = n
+	}
+	return out
 }
 
 // 罫線文字セット
@@ -510,7 +556,7 @@ func renderTile(item symbols.Item, r *fetcher.Result, outerW, chartN int, useCol
 	if chartN < 1 {
 		chartN = 1
 	}
-	innerW := outerW - 2 // 枠線2桁を除いた内側幅
+	innerW := outerW - 2   // 枠線2桁を除いた内側幅
 	contentW := innerW - 2 // 左右1桁ずつの余白を除いた内容幅
 
 	bc := getBoxChars(ascii)
@@ -690,19 +736,27 @@ func RenderDashboard(data map[string]*fetcher.Result, sections []string, opt Opt
 		keys = symbols.SectionOrder
 	}
 
-	// チャート行数 N の決定
-	chartN := 2
-	if opt.Watch {
-		// 全タイル段数 = 各セクションの (タイル数 / cols 切り上げ) の合計
-		totalTileRows := 0
-		for _, secKey := range keys {
-			sec := symbols.Sections[secKey]
-			n := len(sec.Items)
-			rows := (n + cols - 1) / cols
-			totalTileRows += rows
+	// 全タイル段数 = 各セクションの (タイル数 / cols 切り上げ) の合計
+	totalTileRows := 0
+	for _, secKey := range keys {
+		sec := symbols.Sections[secKey]
+		n := len(sec.Items)
+		rows := (n + cols - 1) / cols
+		totalTileRows += rows
+	}
+	headerLines := 1 + len(keys) // ヘッダー1行 + セクション見出し行数
+
+	// チャート行数 N(段ごと)の決定
+	var stageN []int
+	if opt.Watch || opt.FillHeight {
+		// TTY: 高さを使い切る。段ごとに N を配分(余り行は上の段から加算)。
+		stageN = chartRowsPerStage(termRows, headerLines, totalTileRows)
+	} else {
+		// 非TTY(パイプ・リダイレクト): 高さ計算をせず N=2 固定
+		stageN = make([]int, totalTileRows)
+		for i := range stageN {
+			stageN[i] = 2
 		}
-		headerLines := 1 + len(keys) // ヘッダー1行 + セクション見出し行数
-		chartN = chartRows(termRows, headerLines, totalTileRows)
 	}
 
 	var lines []string
@@ -725,6 +779,7 @@ func RenderDashboard(data map[string]*fetcher.Result, sections []string, opt Opt
 	}
 	// ヘッダー直後の空行は入れない
 
+	stageIdx := 0
 	for _, secKey := range keys {
 		sec := symbols.Sections[secKey]
 		title := "■ " + sec.Title
@@ -740,13 +795,18 @@ func RenderDashboard(data map[string]*fetcher.Result, sections []string, opt Opt
 
 		// cols 列のグリッドに並べる。各行で列幅 colWidths を使う。
 		items := sec.Items
-		tileH := chartN + 3 // 上枠+情報1+チャートN+下枠
 		for i := 0; i < len(items); i += cols {
 			end := i + cols
 			if end > len(items) {
 				end = len(items)
 			}
 			rowItems := items[i:end]
+			// この段のチャート行数 N(段ごとに異なりうる)
+			chartN := 2
+			if stageIdx < len(stageN) {
+				chartN = stageN[stageIdx]
+			}
+			tileH := chartN + 3 // 上枠+情報1+チャートN+下枠
 			// この行の各タイルを生成(列ごとに幅が異なる)
 			var tiles [][]string
 			for ci, item := range rowItems {
@@ -761,6 +821,7 @@ func RenderDashboard(data map[string]*fetcher.Result, sections []string, opt Opt
 				}
 				lines = append(lines, strings.Join(parts, ""))
 			}
+			stageIdx++
 		}
 		// セクション間の空行は入れない
 	}

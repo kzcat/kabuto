@@ -111,12 +111,12 @@ func TestGridColumns(t *testing.T) {
 		width int
 		want  int // 期待する列数(minTileW=24)
 	}{
-		{60, 2},   // 60/24 = 2
-		{100, 4},  // 100/24 = 4
-		{200, 8},  // 200/24 = 8
-		{80, 3},   // 80/24 = 3
-		{10, 1},   // 極小でも1列
-		{0, 3},    // 0は80扱い → 3列
+		{60, 2},  // 60/24 = 2
+		{100, 4}, // 100/24 = 4
+		{200, 8}, // 200/24 = 8
+		{80, 3},  // 80/24 = 3
+		{10, 1},  // 極小でも1列
+		{0, 3},   // 0は80扱い → 3列
 	}
 	for _, tt := range tests {
 		got := gridColumns(tt.width)
@@ -157,7 +157,7 @@ func TestDistributeWidths(t *testing.T) {
 }
 
 func TestChartRows(t *testing.T) {
-	// 非watch相当(termRows<=0)は2
+	// 非TTY相当(termRows<=0)は2
 	if got := chartRows(0, 5, 10); got != 2 {
 		t.Errorf("chartRows(0,..) = %d, want 2", got)
 	}
@@ -168,17 +168,70 @@ func TestChartRows(t *testing.T) {
 	if got := chartRows(10, 5, 20); got != 1 {
 		t.Errorf("tiny terminal: got %d, want 1", got)
 	}
-	// 上限8
-	if got := chartRows(500, 5, 2); got != 8 {
-		t.Errorf("large terminal: got %d, want 8", got)
+	// 上限12: 巨大端末
+	if got := chartRows(500, 5, 2); got != 12 {
+		t.Errorf("large terminal: got %d, want 12", got)
 	}
 	// 通常: termRows=50, header=5, tileRows=10 → avail=45, tileH=4, N=1
 	if got := chartRows(50, 5, 10); got != 1 {
 		t.Errorf("chartRows(50,5,10) = %d, want 1", got)
 	}
-	// termRows=80, header=5, tileRows=5 → avail=75, tileH=15, N=12→8
-	if got := chartRows(80, 5, 5); got != 8 {
-		t.Errorf("chartRows(80,5,5) = %d, want 8", got)
+	// termRows=80, header=5, tileRows=5 → avail=75, tileH=15, N=12
+	if got := chartRows(80, 5, 5); got != 12 {
+		t.Errorf("chartRows(80,5,5) = %d, want 12", got)
+	}
+	// 上限ちょうど: tileH=15 → N=12
+	if got := chartRows(80, 5, 5); got != 12 {
+		t.Errorf("cap exactly 12: got %d", got)
+	}
+}
+
+func TestChartRowsPerStage(t *testing.T) {
+	// 非TTY(termRows<=0): 全段 N=2 固定
+	ns := chartRowsPerStage(0, 5, 4)
+	if len(ns) != 4 {
+		t.Fatalf("got %d stages, want 4", len(ns))
+	}
+	for i, n := range ns {
+		if n != 2 {
+			t.Errorf("non-TTY stage %d: got %d, want 2", i, n)
+		}
+	}
+
+	// 余り行配分: termRows=46, header=4 → avail=42, totalTileRows=4
+	// tileH = 42/4 = 10, rem = 2, baseN = 10-3 = 7
+	// 上の2段は +1 → [8, 8, 7, 7]
+	ns = chartRowsPerStage(46, 4, 4)
+	want := []int{8, 8, 7, 7}
+	for i := range want {
+		if ns[i] != want[i] {
+			t.Errorf("remainder distribution stage %d: got %d, want %d (all=%v)", i, ns[i], want[i], ns)
+		}
+	}
+	// 余り行を含めると合計タイル高が avail に一致(余白行なし)
+	sum := 0
+	for _, n := range ns {
+		sum += n + 3 // 各段の外形高 = N+3
+	}
+	if sum != 42 {
+		t.Errorf("total tile height = %d, want avail=42 (no leftover rows)", sum)
+	}
+
+	// 下限1: 極小端末
+	ns = chartRowsPerStage(10, 5, 20)
+	for i, n := range ns {
+		if n < 1 {
+			t.Errorf("lower bound stage %d: got %d", i, n)
+		}
+	}
+
+	// 上限12: 余りで加算しても 12 を超えない
+	// avail=200, totalTileRows=4 → tileH=50, baseN=47→12, rem=0 → 全段12
+	ns = chartRowsPerStage(204, 4, 4)
+	for i, n := range ns {
+		if n != 12 {
+			t.Errorf("cap 12 stage %d: got %d, want 12", i, n)
+		}
 	}
 }
 
@@ -456,5 +509,89 @@ func TestRenderJSON(t *testing.T) {
 	jp := parsed["japan"]
 	if len(jp.Items) == 0 || len(jp.Items[0].Series) != 2 {
 		t.Errorf("series not serialized correctly: %+v", jp.Items)
+	}
+}
+
+// TestFillHeightExact は FillHeight + TermRows 指定時に、
+// 出力行数が TermRows ちょうど(余白行なし)になることを検証する。
+// japan(3銘柄), 幅30 → cols=1 → 3タイル段。header=1, sectionTitle=1。
+// TermRows=40 → avail=40-2=38, tileH=38/3=12, baseN=9, rem=2 → 段N=[10,10,9]。
+// タイル外形高 = (10+3)+(10+3)+(9+3)=38。出力 = header1+title1+38 = 40。
+func TestFillHeightExact(t *testing.T) {
+	data := map[string]*fetcher.Result{
+		"^N225":    {Price: 39500.5, Change: 100, ChangePct: 0.25, Series: []float64{1, 2, 3}},
+		"NKD=F":    {Price: 39400, Change: -50, ChangePct: -0.13, Series: []float64{3, 2, 1}},
+		"USDJPY=X": {Price: 145.12, Change: 0.3, ChangePct: 0.2, Series: []float64{1, 1, 2}},
+	}
+	out := RenderDashboard(data, []string{"japan"}, Options{
+		NoColor: true, TermWidth: 30, TermRows: 40, FillHeight: true,
+	})
+	got := len(strings.Split(out, "\n"))
+	if got != 40 {
+		t.Errorf("FillHeight output lines = %d, want TermRows=40", got)
+	}
+}
+
+// TestFillHeightCappedDiff は N が上限12で頭打ちになる場合、
+// 出力行数が TermRows 未満で、その差が「12上限とタイル段数の制約」で説明できることを検証する。
+// japan(3銘柄), 幅100 → cols=4 → 1タイル段。header=1, title=1, TermRows=40。
+// avail=38, tileH=38, baseN=35→12(上限), rem=0 → 段N=[12]。
+// 出力 = 1+1+(12+3)=17。差 = 40-17=23 はチャート上限12の制約による説明可能な残り。
+func TestFillHeightCappedDiff(t *testing.T) {
+	data := map[string]*fetcher.Result{
+		"^N225":    {Price: 39500.5, Change: 100, ChangePct: 0.25, Series: []float64{1, 2, 3}},
+		"NKD=F":    {Price: 39400, Change: -50, ChangePct: -0.13, Series: []float64{3, 2, 1}},
+		"USDJPY=X": {Price: 145.12, Change: 0.3, ChangePct: 0.2, Series: []float64{1, 1, 2}},
+	}
+	out := RenderDashboard(data, []string{"japan"}, Options{
+		NoColor: true, TermWidth: 100, TermRows: 40, FillHeight: true,
+	})
+	got := len(strings.Split(out, "\n"))
+	want := 1 + 1 + (12 + 3) // header + title + 1段(N=12)
+	if got != want {
+		t.Errorf("capped FillHeight lines = %d, want %d (cap 12)", got, want)
+	}
+	if got >= 40 {
+		t.Errorf("capped output should be < TermRows, got %d", got)
+	}
+}
+
+// TestNonTTYFixedN は非TTY(FillHeight=false, Watch=false)では
+// TermRows を指定しても N=2 固定で表示が変わらないことを検証する。
+func TestNonTTYFixedN(t *testing.T) {
+	data := map[string]*fetcher.Result{
+		"^N225":    {Price: 39500.5, Change: 100, ChangePct: 0.25, Series: []float64{1, 2, 3}},
+		"NKD=F":    {Price: 39400, Change: -50, ChangePct: -0.13, Series: []float64{3, 2, 1}},
+		"USDJPY=X": {Price: 145.12, Change: 0.3, ChangePct: 0.2, Series: []float64{1, 1, 2}},
+	}
+	// 幅30→cols=1→3段。N=2固定なら各段 高さ5。出力 = 1+1+3*5 = 17。
+	// TermRows を 40/100 と変えても結果は不変。
+	for _, rows := range []int{0, 40, 100} {
+		out := RenderDashboard(data, []string{"japan"}, Options{
+			NoColor: true, TermWidth: 30, TermRows: rows, // FillHeight=false, Watch=false
+		})
+		got := len(strings.Split(out, "\n"))
+		want := 1 + 1 + 3*(2+3)
+		if got != want {
+			t.Errorf("non-TTY TermRows=%d: lines = %d, want %d (N=2 fixed)", rows, got, want)
+		}
+	}
+}
+
+// TestPerStageVaryingN は段ごとに N が異なる描画(余り行配分)で
+// レイアウトが破綻しない(各行が端末幅を超えない・空行がない)ことを検証する。
+func TestPerStageVaryingN(t *testing.T) {
+	data := map[string]*fetcher.Result{
+		"^N225":    {Price: 39500.5, Change: 100, ChangePct: 0.25, Series: []float64{1, 2, 3}},
+		"NKD=F":    {Price: 39400, Change: -50, ChangePct: -0.13, Series: []float64{3, 2, 1}},
+		"USDJPY=X": {Price: 145.12, Change: 0.3, ChangePct: 0.2, Series: []float64{1, 1, 2}},
+	}
+	out := RenderDashboard(data, []string{"japan"}, Options{
+		NoColor: true, TermWidth: 30, TermRows: 40, FillHeight: true,
+	})
+	for i, ln := range strings.Split(out, "\n") {
+		if w := stringWidth(ln); w > 30 {
+			t.Errorf("line %d exceeds width 30: w=%d %q", i, w, ln)
+		}
 	}
 }

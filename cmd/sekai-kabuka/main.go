@@ -69,6 +69,8 @@ func main() {
 	if jsonOut {
 		noColor = true
 	}
+	// stdout が TTY かどうか(パイプ・リダイレクトでないか)
+	isTTY := render.UseColor(false)
 	// パイプ時(非TTY)は色なし・ASCIIフォールバック
 	if !render.UseColor(noColor) {
 		noColor = true
@@ -103,8 +105,17 @@ func main() {
 		if jsonOut {
 			fmt.Println(render.RenderJSON(data, sections))
 		} else {
-			// 非 watch: N=2 固定(Watch=false)。幅は自動取得。
-			fmt.Println(render.RenderDashboard(data, sections, opt))
+			// 非 watch の1回表示。stdout が TTY なら高さを使い切る(FillHeight)。
+			// 画面制御(代替スクリーン・カーソル移動)はせず、フルハイトの内容をそのまま出力。
+			// 非 TTY(パイプ・リダイレクト)は高さ計算をせず N=2 固定。
+			o := opt
+			if isTTY {
+				cols, rows := render.DetectTermSize()
+				o.TermWidth = cols
+				o.TermRows = rows
+				o.FillHeight = true
+			}
+			fmt.Println(render.RenderDashboard(data, sections, o))
 		}
 	}
 }
