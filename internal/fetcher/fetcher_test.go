@@ -51,6 +51,9 @@ func TestFetchOne(t *testing.T) {
 	if r.Change != expectedChange {
 		t.Errorf("change: got %f, want %f", r.Change, expectedChange)
 	}
+	if r.Epoch != 1718100000 {
+		t.Errorf("epoch: got %d, want 1718100000", r.Epoch)
+	}
 }
 
 func TestFetchOneSeries(t *testing.T) {

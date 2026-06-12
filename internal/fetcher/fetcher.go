@@ -27,6 +27,7 @@ type Result struct {
 	Change    float64
 	ChangePct float64
 	Time      string
+	Epoch     int64     // regularMarketTime の epoch 秒
 	Series    []float64 // intraday の終値系列(null は前値で補間)
 }
 
@@ -116,6 +117,7 @@ func fetchOne(symbol string, client *http.Client) *Result {
 			Change:    change,
 			ChangePct: pct,
 			Time:      t.Format("15:04"),
+			Epoch:     meta.RegularMarketTime,
 			Series:    series,
 		}
 	}

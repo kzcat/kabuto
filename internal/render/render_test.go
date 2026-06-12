@@ -476,8 +476,8 @@ func TestRenderTileChartRows(t *testing.T) {
 
 func TestRenderDashboardNA(t *testing.T) {
 	data := map[string]*fetcher.Result{"^N225": nil}
-	// 幅100 / japan 3銘柄 → cols=3、各タイル幅 >= 33 でセクション名が枠線に入る。
-	out := RenderDashboard(data, []string{"japan"}, Options{NoColor: true, TermWidth: 100})
+	// japan セクションのみ表示。幅を広めにとりタイル幅 >= 30 でセクション名が枠線に入る。
+	out := RenderDashboard(data, []string{"japan"}, Options{NoColor: true, TermWidth: 200})
 	if !strings.Contains(out, "N/A") {
 		t.Error("expected N/A in output")
 	}
@@ -669,14 +669,15 @@ func TestNonTTYFixedN(t *testing.T) {
 		"NKD=F":    {Price: 39400, Change: -50, ChangePct: -0.13, Series: []float64{3, 2, 1}},
 		"USDJPY=X": {Price: 145.12, Change: 0.3, ChangePct: 0.2, Series: []float64{1, 1, 2}},
 	}
-	// 幅30→cols=min(3,1)=1→3段。N=2固定なら各段 高さ5。出力 = 1+3*5 = 16(セクション見出し廃止)。
-	// TermRows を 40/100 と変えても結果は不変。
+	// 幅30→cols=min(銘柄数,1)=1→銘柄数ぶんの段。N=2固定なら各段 高さ5。
+	// 出力 = header1 + 段数*(2+3)(セクション見出し廃止)。TermRows を変えても不変。
+	stages := len(symbols.Sections["japan"].Items)
 	for _, rows := range []int{0, 40, 100} {
 		out := RenderDashboard(data, []string{"japan"}, Options{
 			NoColor: true, TermWidth: 30, TermRows: rows, // FillHeight=false, Watch=false
 		})
 		got := len(strings.Split(out, "\n"))
-		want := 1 + 3*(2+3)
+		want := 1 + stages*(2+3)
 		if got != want {
 			t.Errorf("non-TTY TermRows=%d: lines = %d, want %d (N=2 fixed)", rows, got, want)
 		}
@@ -764,7 +765,8 @@ func TestOptimalColumnsNonTTYFallback(t *testing.T) {
 
 // TestRenderDashboardNonTTYCompat は非TTY(FillHeight=false, Watch=false)時に
 // 列数が従来どおり幅のみで決まる(gridColumns)ことを、出力行数から検証する。
-// japan(3銘柄), 幅100 → cols=min(3, 100/24=4)=3 → 1段。N=2固定。出力 = header1 + (2+3) = 6。
+// japan, 幅100 → cols=min(銘柄数, 100/24=4) → ceil(銘柄数/cols)段。N=2固定。
+// 出力 = header1 + 段数*(2+3)。
 func TestRenderDashboardNonTTYCompat(t *testing.T) {
 	data := map[string]*fetcher.Result{
 		"^N225":    {Price: 39500.5, Change: 100, ChangePct: 0.25, Series: []float64{1, 2, 3}},
@@ -775,7 +777,96 @@ func TestRenderDashboardNonTTYCompat(t *testing.T) {
 		NoColor: true, TermWidth: 100, TermRows: 40, FillHeight: false, Watch: false,
 	})
 	got := len(strings.Split(out, "\n"))
-	if got != 6 {
-		t.Errorf("non-TTY lines = %d, want 6 (width-only cols, N=2 fixed)", got)
+	n := len(symbols.Sections["japan"].Items)
+	cols := gridColumns(100, n)
+	stages := (n + cols - 1) / cols
+	want := 1 + stages*(2+3)
+	if got != want {
+		t.Errorf("non-TTY lines = %d, want %d (width-only cols, N=2 fixed)", got, want)
+	}
+}
+
+
+// TestRenderJSONFields は country / epoch を含む JSON 出力を検証する(ネットワーク不要)。
+func TestRenderJSONFields(t *testing.T) {
+	data := map[string]*fetcher.Result{
+		"^N225": {Price: 39500.5, PrevClose: 39000.0, Change: 500.5, ChangePct: 1.28, Time: "15:00", Epoch: 1718100000, Series: []float64{39100, 39300, 39500.5}},
+	}
+	out := RenderJSON(data, []string{"japan"})
+
+	var parsed map[string]JSONSection
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("json unmarshal: %v", err)
+	}
+	jp, ok := parsed["japan"]
+	if !ok {
+		t.Fatal("missing japan section")
+	}
+	var n225 *JSONItem
+	for i := range jp.Items {
+		if jp.Items[i].Symbol == "^N225" {
+			n225 = &jp.Items[i]
+			break
+		}
+	}
+	if n225 == nil {
+		t.Fatal("missing ^N225 item")
+	}
+	if n225.Country != "JP" {
+		t.Errorf("country: got %q, want JP", n225.Country)
+	}
+	if n225.Epoch == nil || *n225.Epoch != 1718100000 {
+		t.Errorf("epoch: got %v, want 1718100000", n225.Epoch)
+	}
+	if n225.Price == nil || *n225.Price != 39500.5 {
+		t.Errorf("price: got %v, want 39500.5", n225.Price)
+	}
+}
+
+// TestRenderJSONNA は取得不能(nil)時でも country が出力され epoch/price が null になることを検証する。
+func TestRenderJSONNA(t *testing.T) {
+	data := map[string]*fetcher.Result{"^N225": nil}
+	out := RenderJSON(data, []string{"japan"})
+
+	var parsed map[string]JSONSection
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("json unmarshal: %v", err)
+	}
+	for _, it := range parsed["japan"].Items {
+		if it.Symbol == "^N225" {
+			if it.Country != "JP" {
+				t.Errorf("country: got %q, want JP", it.Country)
+			}
+			if it.Price != nil {
+				t.Errorf("price should be null, got %v", it.Price)
+			}
+			if it.Epoch != nil {
+				t.Errorf("epoch should be null, got %v", it.Epoch)
+			}
+			return
+		}
+	}
+	t.Fatal("missing ^N225 item")
+}
+
+// TestMideastAmericaSection は新セクションが SectionOrder に含まれ Items を持つことを検証する。
+func TestMideastAmericaSection(t *testing.T) {
+	found := false
+	for _, k := range symbols.SectionOrder {
+		if k == "mideast-america" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("mideast-america not in SectionOrder")
+	}
+	sec := symbols.Sections["mideast-america"]
+	if len(sec.Items) == 0 {
+		t.Error("mideast-america has no items")
+	}
+	for _, it := range sec.Items {
+		if it.Country == "" {
+			t.Errorf("%s missing country", it.Symbol)
+		}
 	}
 }

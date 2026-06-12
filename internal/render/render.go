@@ -983,10 +983,12 @@ func RenderDashboard(data map[string]*fetcher.Result, sections []string, opt Opt
 type JSONItem struct {
 	Name      string    `json:"name"`
 	Symbol    string    `json:"symbol"`
+	Country   string    `json:"country"`
 	Price     *float64  `json:"price"`
 	Change    *float64  `json:"change"`
 	ChangePct *float64  `json:"change_pct"`
 	Time      *string   `json:"time"`
+	Epoch     *int64    `json:"epoch"`
 	Series    []float64 `json:"series"`
 }
 
@@ -1009,12 +1011,13 @@ func RenderJSON(data map[string]*fetcher.Result, sections []string) string {
 		for _, item := range sec.Items {
 			r := data[item.Symbol]
 			if r == nil {
-				items = append(items, JSONItem{Name: item.Name, Symbol: item.Symbol})
+				items = append(items, JSONItem{Name: item.Name, Symbol: item.Symbol, Country: item.Country})
 			} else {
 				price := roundTo(r.Price, item.Decimals)
 				change := roundTo(r.Change, item.Decimals)
 				pct := roundTo(r.ChangePct, 2)
 				t := r.Time
+				epoch := r.Epoch
 				series := make([]float64, len(r.Series))
 				for i, v := range r.Series {
 					series[i] = roundTo(v, item.Decimals)
@@ -1022,10 +1025,12 @@ func RenderJSON(data map[string]*fetcher.Result, sections []string) string {
 				items = append(items, JSONItem{
 					Name:      item.Name,
 					Symbol:    item.Symbol,
+					Country:   item.Country,
 					Price:     &price,
 					Change:    &change,
 					ChangePct: &pct,
 					Time:      &t,
+					Epoch:     &epoch,
 					Series:    series,
 				})
 			}
