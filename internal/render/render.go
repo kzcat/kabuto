@@ -434,6 +434,218 @@ func BrailleRows(series []float64, width, rows int) []string {
 	return out
 }
 
+// chartColors はチャート描画に使う色エスケープ群。
+type chartColors struct {
+	use       bool
+	truecolor bool
+	closed    bool   // 閉場(grey 単色)
+	base      [3]int // 騰落色ベース RGB(truecolor グラデーション用)
+	mono      string // 単色エスケープ(非truecolor時)
+	reset     string
+}
+
+const redDashed = "\033[31m" // 基準線(赤)
+
+// chartCellRowFor は値 v をスケール [min,max] 上の「セル行インデックス(0=最上行)」に量子化する。
+// rows セル × 4 ドット = 4*rows 段階。返り値は v の高さに最も近いセル行。
+func chartCellRowFor(v, min, max float64, rows int) int {
+	yLevels := 4 * rows
+	var level int
+	if max-min == 0 {
+		level = 0
+	} else {
+		level = int(math.Round((v - min) / (max - min) * float64(yLevels-1)))
+	}
+	if level < 0 {
+		level = 0
+	}
+	if level >= yLevels {
+		level = yLevels - 1
+	}
+	// セル行(0=最上行) = rows-1 - level/4
+	return rows - 1 - level/4
+}
+
+// buildChartLines は点字エリアチャートを width セル × rows セルで描き、
+// 前日終値の赤い基準線・±1%ガイドライン・高値/安値ラベルを重ねた色付き行を返す。
+//   - スケールは series の min/max と prevClose の両方を含めて取る
+//   - prevClose の高さに赤の水平破線(1セルおき)。チャート本体ドットがある列は本体優先
+//   - rows>=4 かつ prevClose±1% が範囲内のとき bright black 点線(2セルおき)
+//   - labelW>0 のとき右端 labelW 桁をラベル領域とし、右上に高値・右下に安値を bright black 表示
+//   - closed=true(閉場)はチャート・基準線を bright black 単色で描く
+func buildChartLines(series []float64, prevClose float64, width, rows, labelW int, decimals int, cc chartColors) []string {
+	if rows < 1 {
+		rows = 1
+	}
+	if width < 1 {
+		width = 1
+	}
+	chartW := width - labelW
+	if chartW < 1 {
+		chartW = width
+		labelW = 0
+	}
+
+	out := make([]string, rows)
+	blank := rune(brailleBase)
+
+	// スケール: series の min/max と prevClose を含める
+	hi, lo := prevClose, prevClose
+	hasData := len(series) > 0
+	if hasData {
+		hi, lo = series[0], series[0]
+		for _, v := range series {
+			if v > hi {
+				hi = v
+			}
+			if v < lo {
+				lo = v
+			}
+		}
+		if prevClose > hi {
+			hi = prevClose
+		}
+		if prevClose < lo {
+			lo = prevClose
+		}
+	}
+	if hi == lo {
+		hi += 1
+		lo -= 1
+	}
+
+	// チャート本体のセルビット(0=最上行)
+	cells := make([][]int, rows)
+	bodyCell := make([][]bool, rows) // 本体ドットが1つでもあるセル
+	for r := range cells {
+		cells[r] = make([]int, chartW)
+		bodyCell[r] = make([]bool, chartW)
+	}
+	if hasData {
+		xPoints := 2 * chartW
+		yLevels := 4 * rows
+		pts := downsample(series, xPoints)
+		for x, v := range pts {
+			level := int(math.Round((v - lo) / (hi - lo) * float64(yLevels-1)))
+			if level < 0 {
+				level = 0
+			}
+			if level >= yLevels {
+				level = yLevels - 1
+			}
+			col := x % 2
+			cellX := x / 2
+			if cellX >= chartW {
+				cellX = chartW - 1
+			}
+			for h := 0; h <= level; h++ {
+				cellY := rows - 1 - h/4
+				rowInCell := 3 - h%4
+				if cellY < 0 || cellY >= rows {
+					continue
+				}
+				cells[cellY][cellX] |= brailleDotBits[col][rowInCell]
+				bodyCell[cellY][cellX] = true
+			}
+		}
+	}
+
+	// 基準線(前日終値)のセル行
+	baseRow := chartCellRowFor(prevClose, lo, hi, rows)
+	// ±1% ガイドのセル行(rows>=4 かつ範囲内)
+	upGuide, downGuide := -1, -1
+	if rows >= 4 {
+		up := prevClose * 1.01
+		dn := prevClose * 0.99
+		if up <= hi && up >= lo {
+			upGuide = chartCellRowFor(up, lo, hi, rows)
+		}
+		if dn <= hi && dn >= lo {
+			downGuide = chartCellRowFor(dn, lo, hi, rows)
+		}
+	}
+
+	mono := cc.mono
+	rst := cc.reset
+	guideClr := brightBlk
+	baseClr := redDashed
+	if cc.closed {
+		// 閉場: チャート・基準線とも bright black 単色
+		mono = brightBlk
+		baseClr = brightBlk
+	}
+	if !cc.use {
+		mono, rst, guideClr, baseClr = "", "", "", ""
+	}
+
+	// 高値・安値ラベル文字列(bright black)
+	var hiLabel, loLabel string
+	if labelW > 0 && hasData {
+		shi, slo := series[0], series[0]
+		for _, v := range series {
+			if v > shi {
+				shi = v
+			}
+			if v < slo {
+				slo = v
+			}
+		}
+		hiLabel = truncWidth(fmtNum(shi, decimals), labelW)
+		loLabel = truncWidth(fmtNum(slo, decimals), labelW)
+	}
+
+	for r := 0; r < rows; r++ {
+		var b strings.Builder
+		// チャート本体セル(各セル文字に色を付ける)
+		for c := 0; c < chartW; c++ {
+			cell := cells[r][c]
+			isBody := bodyCell[r][c]
+			switch {
+			case isBody && cc.use && cc.truecolor && !cc.closed:
+				b.WriteString(fg24(gradientRGB(cc.base, r, rows)))
+				b.WriteRune(rune(brailleBase + cell))
+				b.WriteString(rst)
+			case isBody:
+				b.WriteString(mono)
+				b.WriteRune(rune(brailleBase + cell))
+				b.WriteString(rst)
+			case r == baseRow && c%2 == 0:
+				// 基準線: 赤の水平破線(1セルおき)。本体ドットがない位置のみ。
+				b.WriteString(baseClr)
+				b.WriteRune('\u2812') // 中段ドット(dot2+dot5)で水平線を表現
+				b.WriteString(rst)
+			case (r == upGuide || r == downGuide) && c%2 == 0:
+				// ±1% ガイド: bright black 点線(2セルおき)
+				b.WriteString(guideClr)
+				b.WriteRune('\u2812')
+				b.WriteString(rst)
+			default:
+				b.WriteRune(blank)
+			}
+		}
+		// ラベル領域
+		if labelW > 0 {
+			lab := ""
+			if r == 0 {
+				lab = hiLabel
+			} else if r == rows-1 {
+				lab = loLabel
+			}
+			padded := padLeft(lab, labelW)
+			if cc.use && lab != "" {
+				b.WriteString(guideClr)
+				b.WriteString(padded)
+				b.WriteString(rst)
+			} else {
+				b.WriteString(padded)
+			}
+		}
+		out[r] = b.String()
+	}
+	return out
+}
+
+
 const minTileW = 24 // 最小タイル外形幅(全角=2考慮済み)
 
 // distributeWidths は端末幅を cols 列に配分する。
@@ -483,7 +695,7 @@ func chartRows(termRows, headerLines, totalTileRows int) int {
 		avail = 1
 	}
 	tileH := avail / totalTileRows
-	n := tileH - 3
+	n := tileH - tileChrome
 	if n < 1 {
 		n = 1
 	}
@@ -496,6 +708,9 @@ func chartRows(termRows, headerLines, totalTileRows int) int {
 const (
 	chartNMin = 1
 	chartNMax = 12
+	// tileChrome は1タイルの非チャート行数(上枠 + 騰落率バッジ行 + 現在値行 + 下枠)。
+	// タイル外形高 = チャート行数 N + tileChrome。新レイアウトでは 4。
+	tileChrome = 4
 )
 
 // chartRowsPerStage は端末行数を totalTileRows 段に配分し、各段(上→下)のチャート行数 N を返す。
@@ -520,7 +735,7 @@ func chartRowsPerStage(termRows, headerLines, totalTileRows int) []int {
 	}
 	tileH := avail / totalTileRows
 	rem := avail % totalTileRows // タイル高さの均等割りで余った行数(=配り切れていない下端の行)
-	baseN := tileH - 3
+	baseN := tileH - tileChrome
 	if baseN < chartNMin {
 		baseN = chartNMin
 	}
@@ -554,7 +769,7 @@ func usedRowsForCols(termRows, headerLines, itemCount, cols int) int {
 	}
 	tileH := avail / stages
 	rem := avail % stages
-	baseN := tileH - 3
+	baseN := tileH - tileChrome
 	if baseN < chartNMin {
 		baseN = chartNMin
 	}
@@ -567,7 +782,7 @@ func usedRowsForCols(termRows, headerLines, itemCount, cols int) int {
 		if i < rem && n < chartNMax {
 			n++
 		}
-		used += 3 + n
+		used += tileChrome + n
 	}
 	return used
 }
@@ -673,10 +888,58 @@ func buildTopBorder(bc boxChars, border, rst, name, secName string, innerW int) 
 	return b.String()
 }
 
+// buildTopBorderW は buildTopBorder と同じだが、name が色エスケープを含みうるため
+// 表示幅 nameW を明示で受け取る。secName は bright black(border 色)で描く。
+func buildTopBorderW(bc boxChars, border, rst, name string, nameW int, secName string, innerW int) string {
+	var b strings.Builder
+	b.WriteString(border)
+	b.WriteString(bc.tl)
+	var inner strings.Builder
+	inner.WriteString(bc.h)
+	inner.WriteString(" ")
+	inner.WriteString(name)
+	inner.WriteString(" ")
+	usedLeft := 2 + nameW
+	usedLeft++ // 末尾の " "
+	if secName != "" {
+		secW := stringWidth(secName)
+		rightFixed := 1 + secW + 1 + 1
+		dashN := innerW - usedLeft - rightFixed
+		if dashN < 1 {
+			dashN = 1
+		}
+		inner.WriteString(strings.Repeat(bc.h, dashN))
+		inner.WriteString(" ")
+		inner.WriteString(secName)
+		inner.WriteString(" ")
+		inner.WriteString(bc.h)
+	} else {
+		dashN := innerW - usedLeft
+		if dashN < 0 {
+			dashN = 0
+		}
+		inner.WriteString(strings.Repeat(bc.h, dashN))
+	}
+	b.WriteString(inner.String())
+	b.WriteString(bc.tr)
+	b.WriteString(rst)
+	return b.String()
+}
+
+// isClosed は regularMarketTime(epoch 秒)が現在より30分以上古いとき閉場とみなす。
+// epoch<=0(取得不能)は閉場扱いにしない。
+func isClosed(epoch int64, now time.Time) bool {
+	if epoch <= 0 {
+		return false
+	}
+	return now.Sub(time.Unix(epoch, 0)) > 30*time.Minute
+}
 
 // outerW = タイル外形幅(枠線込み)、chartN = チャート行数。
 // secName が非空かつタイル幅 >= 30 桁のとき、上枠線の右端に bright black でセクション名を埋め込む。
-// 返り行数は chartN + 3(上枠 + 情報行 + チャートN行 + 下枠)。
+// 上枠線の銘柄名の前に国コード [XX](bright black)を付ける(Country が空なら省略)。
+// レイアウト: 上枠 + 騰落率バッジ行(左寄せ) + チャートN行 + 現在値行(太字)+前日比 + 下枠。
+// 返り行数は chartN + 4。
 func renderTile(item symbols.Item, r *fetcher.Result, outerW, chartN int, useColor, redGreen, ascii, truecolor bool, secName string) []string {
 	if outerW < minTileW {
 		outerW = minTileW
@@ -691,32 +954,42 @@ func renderTile(item symbols.Item, r *fetcher.Result, outerW, chartN int, useCol
 	border := brightBlk
 	wclr := boldWhite
 	rst := reset
+	cc := brightBlk // 国コード色
 	if !useColor {
-		border, wclr, rst = "", "", ""
+		border, wclr, rst, cc = "", "", "", ""
 	}
 
-	// 見出し付き上辺: ┌─ 名称 ─...─ セクション ─┐
-	// タイル幅 30 桁未満のときはセクション名を省略する。
-	name := truncWidth(item.Name, innerW-4)
-	nameW := stringWidth(name)
-	// 上辺の構成(内側 innerW 桁分):
-	//   bc.h + " " + name + " " + <dash...> + bc.tr
-	// セクション名を入れる場合は <dash...> の右端に "─ secName ─" を埋め込む。
-	// 全体: bc.h + " " + name + " " + dashLeft*"─" + " " + secName + " " + bc.h*1 まで
-	// 内側幅 innerW のうち、固定で使う桁:
-	//   先頭の bc.h(1) + " "(1) + name(nameW) + " "(1) = 3 + nameW
+	// 上枠の銘柄名(国コード前置)。国コードは bright black の [XX]。
+	cc2 := ""
+	if item.Country != "" {
+		cc2 = "[" + item.Country + "]"
+	}
+	// 名称部の表示幅見積もり: [XX] + name
+	maxName := innerW - 4 - stringWidth(cc2)
+	if maxName < 1 {
+		maxName = 1
+	}
+	name := truncWidth(item.Name, maxName)
+	// buildTopBorder には「国コード(色付き)+名称」を1つの表示文字列として渡す。
+	displayName := name
+	if cc2 != "" {
+		if useColor {
+			displayName = cc + cc2 + rst + name
+		} else {
+			displayName = cc2 + name
+		}
+	}
+	nameW := stringWidth(cc2) + stringWidth(name)
 	usedLeft := 3 + nameW
 	secLabel := ""
 	if outerW >= 30 && secName != "" {
-		// "─ secName ─" の表示幅 = 1(─) + 1(空) + secW + 1(空) + 1(─) = secW + 4
 		secW := stringWidth(secName)
 		need := secW + 4
-		// 名称部の後に最低1本の dash を残せること
 		if usedLeft+1+need <= innerW {
 			secLabel = secName
 		}
 	}
-	top := buildTopBorder(bc, border, rst, name, secLabel, innerW)
+	top := buildTopBorderW(bc, border, rst, displayName, nameW, secLabel, innerW)
 
 	bottom := border + bc.bl + strings.Repeat(bc.h, innerW) + bc.br + rst
 
@@ -727,20 +1000,17 @@ func renderTile(item symbols.Item, r *fetcher.Result, outerW, chartN int, useCol
 		return left + " " + inner + " " + right
 	}
 
-	lines := make([]string, 0, chartN+3)
+	lines := make([]string, 0, chartN+tileChrome)
 	lines = append(lines, top)
 
 	if r == nil {
 		na := padRight("N/A", contentW)
 		lines = append(lines, wrap(na))
 		blank := strings.Repeat(string(rune(brailleBase)), contentW)
-		if ascii {
-			// ASCII フォールバックでも点字は維持(SPEC: 罫線だけ ASCII)
-			blank = strings.Repeat(string(rune(brailleBase)), contentW)
-		}
 		for i := 0; i < chartN; i++ {
 			lines = append(lines, wrap(blank))
 		}
+		lines = append(lines, wrap(padRight("", contentW)))
 		lines = append(lines, bottom)
 		return lines
 	}
@@ -749,47 +1019,122 @@ func renderTile(item symbols.Item, r *fetcher.Result, outerW, chartN int, useCol
 	priceS := fmtNum(r.Price, item.Decimals)
 	changeS := fmtChange(r.Change, item.Decimals)
 	pctText := arrow(r.Change) + fmtPct(r.ChangePct)
-	// 前日比% バッジ: 前後空白1 + 太字白文字 + 騰落色背景
-	badge := buildBadge(pctText, r.Change, useColor, redGreen)
-	badgeW := stringWidth(" " + pctText + " ") // バッジの表示幅(背景込み)
 
-	// 情報行: 現在値(太字白)  前日比(騰落色)  バッジ(右寄せ)
-	plainW := stringWidth(priceS) + 2 + stringWidth(changeS) + 2 + badgeW
+	// 上段: 騰落率バッジ(左寄せ)
+	badge := buildBadge(pctText, r.Change, useColor, redGreen)
+	badgePlainW := stringWidth(" " + pctText + " ")
+	badgeLine := badge + strings.Repeat(" ", maxInt(0, contentW-badgePlainW))
+	lines = append(lines, wrap(badgeLine))
+
+	// チャート行: 点字エリアチャート(基準線・ガイド・ラベル・閉場対応)
+	closed := isClosed(r.Epoch, time.Now())
+	labelW := 0
+	if outerW >= 30 {
+		labelW = 9
+		if labelW > contentW-2 {
+			labelW = 0
+		}
+	}
+	cclr := chartColors{
+		use:       useColor,
+		truecolor: truecolor,
+		closed:    closed,
+		base:      baseRGBFor(r.Change, redGreen),
+		mono:      clr,
+		reset:     rst,
+	}
+	rowsStr := buildChartLines(r.Series, r.PrevClose, contentW, chartN, labelW, item.Decimals, cclr)
+	for _, rowStr := range rowsStr {
+		lines = append(lines, wrap(rowStr))
+	}
+
+	// 下段: 現在値(太字白) + 前日比(騰落色)
+	plainW := stringWidth(priceS) + 2 + stringWidth(changeS)
 	if plainW <= contentW {
-		extra := contentW - plainW
-		gapL := extra / 2
-		gapR := extra - gapL
-		infoColored := wclr + priceS + rst +
-			strings.Repeat(" ", 2+gapL) + clr + changeS + rst +
-			strings.Repeat(" ", 2+gapR) + badge
-		lines = append(lines, wrap(infoColored))
-	} else if stringWidth(priceS)+1+badgeW <= contentW {
-		// 収まらない場合は price と バッジのみ
-		gap := contentW - stringWidth(priceS) - badgeW
-		infoColored := wclr + priceS + rst + strings.Repeat(" ", gap) + badge
-		lines = append(lines, wrap(infoColored))
+		gap := contentW - plainW
+		valLine := wclr + priceS + rst + strings.Repeat(" ", 2+gap) + clr + changeS + rst
+		lines = append(lines, wrap(valLine))
+	} else if stringWidth(priceS) <= contentW {
+		valLine := wclr + priceS + rst
+		lines = append(lines, wrap(padPlainRight(valLine, priceS, contentW)))
 	} else {
 		alt := truncWidth(priceS, contentW)
-		infoColored := wclr + alt + rst
-		lines = append(lines, wrap(padPlainRight(infoColored, alt, contentW)))
+		lines = append(lines, wrap(padPlainRight(wclr+alt+rst, alt, contentW)))
 	}
 
-	// チャート行: 点字エリアチャート
-	rowsStr := BrailleRows(r.Series, contentW, chartN)
-	base := baseRGBFor(r.Change, redGreen)
-	for i, rowStr := range rowsStr {
-		var c string
-		switch {
-		case !useColor:
-			c = rowStr
-		case truecolor:
-			c = fg24(gradientRGB(base, i, len(rowsStr))) + rowStr + rst
-		default:
-			c = clr + rowStr + rst
+	lines = append(lines, bottom)
+	return lines
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// renderClockTile は時計タイルを描く。タイトル「時計」、中央に日付(例 6/13(金))と
+// 時刻(例 00:29)を2行・太字白で中央寄せ。全行数は renderTile と同じ chartN + tileChrome。
+func renderClockTile(outerW, chartN int, useColor, ascii bool) []string {
+	if outerW < minTileW {
+		outerW = minTileW
+	}
+	if chartN < 1 {
+		chartN = 1
+	}
+	innerW := outerW - 2
+	contentW := innerW - 2
+
+	bc := getBoxChars(ascii)
+	border := brightBlk
+	wclr := boldWhite
+	rst := reset
+	if !useColor {
+		border, wclr, rst = "", "", ""
+	}
+
+	now := time.Now().In(jst)
+	weekdays := []string{"日", "月", "火", "水", "木", "金", "土"}
+	dateStr := fmt.Sprintf("%d/%d(%s)", int(now.Month()), now.Day(), weekdays[int(now.Weekday())])
+	timeStr := now.Format("15:04")
+
+	top := buildTopBorderW(bc, border, rst, "時計", stringWidth("時計"), "", innerW)
+	bottom := border + bc.bl + strings.Repeat(bc.h, innerW) + bc.br + rst
+	left := border + bc.v + rst
+	right := border + bc.v + rst
+	wrap := func(inner string) string { return left + " " + inner + " " + right }
+
+	// 内側行数 = chartN + 2(バッジ行枠 + チャート行 + 値行枠 相当)。
+	innerRows := chartN + 2
+	center := func(s string) string {
+		sw := stringWidth(s)
+		if sw >= contentW {
+			return truncWidth(s, contentW)
 		}
-		lines = append(lines, wrap(c))
+		padL := (contentW - sw) / 2
+		padR := contentW - sw - padL
+		return strings.Repeat(" ", padL) + wclr + s + rst + strings.Repeat(" ", padR)
 	}
+	blank := wrap(padRight("", contentW))
 
+	lines := make([]string, 0, chartN+tileChrome)
+	lines = append(lines, top)
+	// 日付・時刻を内側の中央2行に配置
+	dateRow := innerRows/2 - 1
+	timeRow := innerRows / 2
+	if dateRow < 0 {
+		dateRow = 0
+	}
+	for r := 0; r < innerRows; r++ {
+		switch r {
+		case dateRow:
+			lines = append(lines, wrap(center(dateStr)))
+		case timeRow:
+			lines = append(lines, wrap(center(timeStr)))
+		default:
+			lines = append(lines, blank)
+		}
+	}
 	lines = append(lines, bottom)
 	return lines
 }
@@ -959,12 +1304,19 @@ func RenderDashboard(data map[string]*fetcher.Result, sections []string, opt Opt
 		if stageIdx < len(stageN) {
 			chartN = stageN[stageIdx]
 		}
-		tileH := chartN + 3 // 上枠+情報1+チャートN+下枠
+		tileH := chartN + tileChrome // 上枠+バッジ行+チャートN+現在値行+下枠
 		// この行の各タイルを生成(列ごとに幅が異なる)
 		var tiles [][]string
 		for ci, fi := range rowItems {
 			w := colWidths[ci]
 			tiles = append(tiles, renderTile(fi.item, data[fi.item.Symbol], w, chartN, useColor, opt.RedGreen, ascii, truecolor, fi.secName))
+		}
+		// 最終行に空きセルがあれば、先頭の空き1セルに時計タイルを描く。
+		lastRow := end >= len(flat)
+		if lastRow && len(rowItems) < cols {
+			clockCol := len(rowItems) // 先頭の空きセルの列インデックス
+			w := colWidths[clockCol]
+			tiles = append(tiles, renderClockTile(w, chartN, useColor, ascii))
 		}
 		// 行ごとに横連結(ギャップ0)
 		for li := 0; li < tileH; li++ {

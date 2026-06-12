@@ -180,13 +180,13 @@ func TestChartRows(t *testing.T) {
 	if got := chartRows(50, 5, 10); got != 1 {
 		t.Errorf("chartRows(50,5,10) = %d, want 1", got)
 	}
-	// termRows=80, header=5, tileRows=5 → avail=75, tileH=15, N=12
-	if got := chartRows(80, 5, 5); got != 12 {
-		t.Errorf("chartRows(80,5,5) = %d, want 12", got)
+	// termRows=80, header=5, tileRows=5 → avail=75, tileH=15, N=15-4=11
+	if got := chartRows(80, 5, 5); got != 11 {
+		t.Errorf("chartRows(80,5,5) = %d, want 11", got)
 	}
-	// 上限ちょうど: tileH=15 → N=12
-	if got := chartRows(80, 5, 5); got != 12 {
-		t.Errorf("cap exactly 12: got %d", got)
+	// 上限12: tileH=16 (avail=80) → N=12
+	if got := chartRows(85, 5, 5); got != 12 {
+		t.Errorf("cap 12: got %d", got)
 	}
 }
 
@@ -203,10 +203,10 @@ func TestChartRowsPerStage(t *testing.T) {
 	}
 
 	// 余り行配分: termRows=46, header=4 → avail=42, totalTileRows=4
-	// tileH = 42/4 = 10, rem = 2, baseN = 10-3 = 7
-	// 上の2段は +1 → [8, 8, 7, 7]
+	// tileH = 42/4 = 10, rem = 2, baseN = 10-4 = 6
+	// 上の2段は +1 → [7, 7, 6, 6]
 	ns = chartRowsPerStage(46, 4, 4)
-	want := []int{8, 8, 7, 7}
+	want := []int{7, 7, 6, 6}
 	for i := range want {
 		if ns[i] != want[i] {
 			t.Errorf("remainder distribution stage %d: got %d, want %d (all=%v)", i, ns[i], want[i], ns)
@@ -215,7 +215,7 @@ func TestChartRowsPerStage(t *testing.T) {
 	// 余り行を含めると合計タイル高が avail に一致(余白行なし)
 	sum := 0
 	for _, n := range ns {
-		sum += n + 3 // 各段の外形高 = N+3
+		sum += n + tileChrome // 各段の外形高 = N+4
 	}
 	if sum != 42 {
 		t.Errorf("total tile height = %d, want avail=42 (no leftover rows)", sum)
@@ -435,9 +435,9 @@ func TestRenderDashboardNoBlankLines(t *testing.T) {
 func TestRenderTileNA(t *testing.T) {
 	item := symbols.Item{Name: "日経平均", Symbol: "^N225", Decimals: 2}
 	lines := renderTile(item, nil, 27, 2, false, false, true, false, "日本")
-	// 上枠+情報1+チャート2+下枠 = 5
-	if len(lines) != 5 {
-		t.Fatalf("expected 5 lines, got %d", len(lines))
+	// 上枠+バッジ行+チャート2+値行+下枠 = 6
+	if len(lines) != 6 {
+		t.Fatalf("expected 6 lines, got %d", len(lines))
 	}
 	if !strings.Contains(lines[1], "N/A") {
 		t.Errorf("expected N/A in tile, got %q", lines[1])
@@ -458,9 +458,9 @@ func TestRenderTileWithData(t *testing.T) {
 	if !strings.Contains(joined, "+500.50") {
 		t.Errorf("missing change:\n%s", joined)
 	}
-	// 行数 = 2(チャート) + 3 = 5
-	if len(lines) != 5 {
-		t.Errorf("expected 5 lines, got %d", len(lines))
+	// 行数 = 2(チャート) + 4 = 6
+	if len(lines) != 6 {
+		t.Errorf("expected 6 lines, got %d", len(lines))
 	}
 }
 
@@ -468,8 +468,8 @@ func TestRenderTileChartRows(t *testing.T) {
 	r := &fetcher.Result{Price: 100, Change: 1, ChangePct: 1, Series: []float64{1, 2, 3, 4, 5}}
 	for _, n := range []int{1, 4, 8} {
 		lines := renderTile(symbols.Item{Name: "X", Symbol: "X", Decimals: 2}, r, 30, n, false, false, true, false, "日本")
-		if len(lines) != n+3 {
-			t.Errorf("chartN=%d: expected %d lines, got %d", n, n+3, len(lines))
+		if len(lines) != n+4 {
+			t.Errorf("chartN=%d: expected %d lines, got %d", n, n+4, len(lines))
 		}
 	}
 }
@@ -677,7 +677,7 @@ func TestNonTTYFixedN(t *testing.T) {
 			NoColor: true, TermWidth: 30, TermRows: rows, // FillHeight=false, Watch=false
 		})
 		got := len(strings.Split(out, "\n"))
-		want := 1 + stages*(2+3)
+		want := 1 + stages*(2+tileChrome)
 		if got != want {
 			t.Errorf("non-TTY TermRows=%d: lines = %d, want %d (N=2 fixed)", rows, got, want)
 		}
@@ -703,17 +703,17 @@ func TestPerStageVaryingN(t *testing.T) {
 }
 
 // TestUsedRowsForCols は使用行数計算が chartRowsPerStage と整合することを検証する。
-// 33銘柄, 幅300, 高90, header1。
-//   C=6:  段数=6, avail=89, tileH=14, baseN=11, rem=5 → 段N=[12,12,12,12,12,11]
-//         使用 = 5*(3+12)+(3+11) = 75+14 = 89
-//   C=12: 段数=3, avail=89, tileH=29, baseN=26→12(上限), rem=2 → 段N=[12,12,12]
-//         使用 = 3*(3+12) = 45
+// 33銘柄, 幅300, 高90, header1。tileChrome=4。
+//   C=6:  段数=6, avail=89, tileH=14, baseN=10, rem=5 → 段N=[11,11,11,11,11,10]
+//         使用 = 5*(4+11)+(4+10) = 75+14 = 89
+//   C=12: 段数=3, avail=89, tileH=29, baseN=25→12(上限), rem=2 → 段N=[12,12,12]
+//         使用 = 3*(4+12) = 48
 func TestUsedRowsForCols(t *testing.T) {
 	if got := usedRowsForCols(90, 1, 33, 6); got != 89 {
 		t.Errorf("usedRowsForCols(C=6) = %d, want 89", got)
 	}
-	if got := usedRowsForCols(90, 1, 33, 12); got != 45 {
-		t.Errorf("usedRowsForCols(C=12) = %d, want 45", got)
+	if got := usedRowsForCols(90, 1, 33, 12); got != 48 {
+		t.Errorf("usedRowsForCols(C=12) = %d, want 48", got)
 	}
 	if got := usedRowsForCols(0, 1, 33, 6); got != 0 {
 		t.Errorf("usedRowsForCols(termRows=0) = %d, want 0", got)
@@ -780,7 +780,7 @@ func TestRenderDashboardNonTTYCompat(t *testing.T) {
 	n := len(symbols.Sections["japan"].Items)
 	cols := gridColumns(100, n)
 	stages := (n + cols - 1) / cols
-	want := 1 + stages*(2+3)
+	want := 1 + stages*(2+tileChrome)
 	if got != want {
 		t.Errorf("non-TTY lines = %d, want %d (width-only cols, N=2 fixed)", got, want)
 	}
