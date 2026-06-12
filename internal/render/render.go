@@ -538,6 +538,88 @@ func chartRowsPerStage(termRows, headerLines, totalTileRows int) []int {
 	return out
 }
 
+// usedRowsForCols は列数 cols のときに実際に使用される行数を返す。
+// 段数 = ceil(itemCount/cols)、avail = termRows - headerLines。
+// 各段の N は chartRowsPerStage と同一の規則(baseN = avail/段数 - 3 を clamp、
+// 余り行 rem は上の段から1段1行ずつ N に加算、ただし N 上限 chartNMax 内)で決める。
+// 使用行数 = Σ(3 + N)。termRows<=0 / itemCount<=0 のときは 0 を返す(高さ最適化対象外)。
+func usedRowsForCols(termRows, headerLines, itemCount, cols int) int {
+	if termRows <= 0 || itemCount <= 0 || cols < 1 {
+		return 0
+	}
+	stages := (itemCount + cols - 1) / cols
+	avail := termRows - headerLines
+	if avail < 1 {
+		avail = 1
+	}
+	tileH := avail / stages
+	rem := avail % stages
+	baseN := tileH - 3
+	if baseN < chartNMin {
+		baseN = chartNMin
+	}
+	if baseN > chartNMax {
+		baseN = chartNMax
+	}
+	used := 0
+	for i := 0; i < stages; i++ {
+		n := baseN
+		if i < rem && n < chartNMax {
+			n++
+		}
+		used += 3 + n
+	}
+	return used
+}
+
+// optimalColumns は幅と高さの両方を考慮して列数 C を全探索で決める(TTY 用)。
+// 候補: C ∈ [1, min(itemCount, termWidth/minTileW)]。
+// 各 C の使用行数(usedRowsForCols)を最大化する C を採用。同点なら C が大きい方。
+// ただし使用行数が利用可能行数(avail)を超える C は画面からあふれるため除外する
+// (段数が多すぎてタイル高さが情報行+チャート1行を確保できないケース)。
+// 有効な C が無い場合・termRows<=0 のときは幅のみの gridColumns にフォールバックする。
+func optimalColumns(termWidth, termRows, headerLines, itemCount int) int {
+	if termWidth <= 0 {
+		termWidth = 80
+	}
+	if itemCount <= 0 {
+		return 1
+	}
+	if termRows <= 0 {
+		return gridColumns(termWidth, itemCount)
+	}
+	maxC := termWidth / minTileW
+	if maxC < 1 {
+		maxC = 1
+	}
+	if maxC > itemCount {
+		maxC = itemCount
+	}
+	avail := termRows - headerLines
+	if avail < 1 {
+		avail = 1
+	}
+	bestC := 0
+	bestUsed := -1
+	for c := 1; c <= maxC; c++ {
+		used := usedRowsForCols(termRows, headerLines, itemCount, c)
+		if used > avail {
+			// 画面からあふれる配置は不採用。
+			continue
+		}
+		// 使用行数が最大の C。同点なら C が大きい方(>= で後勝ち=大きい C を採用)。
+		if used >= bestUsed {
+			bestUsed = used
+			bestC = c
+		}
+	}
+	if bestC == 0 {
+		// すべての C があふれる(端末が極端に低い)場合は幅のみで決定。
+		return gridColumns(termWidth, itemCount)
+	}
+	return bestC
+}
+
 // 罫線文字セット
 type boxChars struct {
 	tl, tr, bl, br, h, v string
@@ -811,8 +893,18 @@ func RenderDashboard(data map[string]*fetcher.Result, sections []string, opt Opt
 		}
 	}
 
-	// 列数 = max(1, termWidth/24)。ただし表示銘柄数を超えない。
-	cols := gridColumns(termWidth, len(flat))
+	headerLines := 1 // ヘッダー1行のみ(セクション見出し行は廃止)
+
+	// 列数の決定:
+	//   TTY(Watch || FillHeight) かつ高さ既知 → 幅と高さの両方から全探索で最適化
+	//   非TTY → 従来どおり幅のみ(gridColumns)
+	tty := opt.Watch || opt.FillHeight
+	var cols int
+	if tty && termRows > 0 {
+		cols = optimalColumns(termWidth, termRows, headerLines, len(flat))
+	} else {
+		cols = gridColumns(termWidth, len(flat))
+	}
 	colWidths := distributeWidths(termWidth, cols)
 
 	// 全タイル段数 = ceil(銘柄数 / cols)
@@ -820,7 +912,6 @@ func RenderDashboard(data map[string]*fetcher.Result, sections []string, opt Opt
 	if len(flat) > 0 {
 		totalTileRows = (len(flat) + cols - 1) / cols
 	}
-	headerLines := 1 // ヘッダー1行のみ(セクション見出し行は廃止)
 
 	// チャート行数 N(段ごと)の決定
 	var stageN []int

@@ -640,11 +640,12 @@ func TestFillHeightExact(t *testing.T) {
 	}
 }
 
-// TestFillHeightCappedDiff は N が上限12で頭打ちになる場合、
-// 出力行数が TermRows 未満で、その差が「12上限とタイル段数の制約」で説明できることを検証する。
-// japan(3銘柄), 幅100 → cols=min(3,4)=3 → 1タイル段。header=1, TermRows=40。
-// avail=39, tileH=39, baseN=36→12(上限), rem=0 → 段N=[12]。
-// 出力 = 1+(12+3)=16。差 = 40-16=24 はチャート上限12の制約による説明可能な残り。
+// TestFillHeightCappedDiff は幅+高さ最適化後の列選択を検証する。
+// japan(3銘柄), 幅100, header=1, TermRows=40 → avail=39。
+//   C=1: 3段, tileH=13, baseN=10, rem=0, used=3*13=39(=avail, 採用)
+//   C=2: 2段, tileH=19, baseN=16→12, used=2*15=30
+//   C=3: 1段, baseN→12, used=15
+// 高さを最も使い切る C=1 が選ばれ、出力 = header1 + 39 = 40(余白なし)。
 func TestFillHeightCappedDiff(t *testing.T) {
 	data := map[string]*fetcher.Result{
 		"^N225":    {Price: 39500.5, Change: 100, ChangePct: 0.25, Series: []float64{1, 2, 3}},
@@ -655,12 +656,8 @@ func TestFillHeightCappedDiff(t *testing.T) {
 		NoColor: true, TermWidth: 100, TermRows: 40, FillHeight: true,
 	})
 	got := len(strings.Split(out, "\n"))
-	want := 1 + (12 + 3) // header + 1段(N=12)
-	if got != want {
-		t.Errorf("capped FillHeight lines = %d, want %d (cap 12)", got, want)
-	}
-	if got >= 40 {
-		t.Errorf("capped output should be < TermRows, got %d", got)
+	if got != 40 {
+		t.Errorf("FillHeight lines = %d, want 40 (height-optimized C=1)", got)
 	}
 }
 
@@ -701,5 +698,84 @@ func TestPerStageVaryingN(t *testing.T) {
 		if w := stringWidth(ln); w > 30 {
 			t.Errorf("line %d exceeds width 30: w=%d %q", i, w, ln)
 		}
+	}
+}
+
+// TestUsedRowsForCols は使用行数計算が chartRowsPerStage と整合することを検証する。
+// 33銘柄, 幅300, 高90, header1。
+//   C=6:  段数=6, avail=89, tileH=14, baseN=11, rem=5 → 段N=[12,12,12,12,12,11]
+//         使用 = 5*(3+12)+(3+11) = 75+14 = 89
+//   C=12: 段数=3, avail=89, tileH=29, baseN=26→12(上限), rem=2 → 段N=[12,12,12]
+//         使用 = 3*(3+12) = 45
+func TestUsedRowsForCols(t *testing.T) {
+	if got := usedRowsForCols(90, 1, 33, 6); got != 89 {
+		t.Errorf("usedRowsForCols(C=6) = %d, want 89", got)
+	}
+	if got := usedRowsForCols(90, 1, 33, 12); got != 45 {
+		t.Errorf("usedRowsForCols(C=12) = %d, want 45", got)
+	}
+	if got := usedRowsForCols(0, 1, 33, 6); got != 0 {
+		t.Errorf("usedRowsForCols(termRows=0) = %d, want 0", got)
+	}
+}
+
+// TestOptimalColumnsSpecExample は SPEC の例:
+// 33銘柄・300桁×90行で C=12 ではなく約6列が選ばれ、使用行数がほぼ 89/89 になることを検証する。
+func TestOptimalColumnsSpecExample(t *testing.T) {
+	c := optimalColumns(300, 90, 1, 33)
+	if c < 5 || c > 7 {
+		t.Errorf("optimalColumns(33, 300x90) = %d, want ~6", c)
+	}
+	used := usedRowsForCols(90, 1, 33, c)
+	avail := 90 - 1
+	if avail-used > 2 {
+		t.Errorf("used=%d (avail=%d): 画面下部が余りすぎ", used, avail)
+	}
+	// 幅のみの従来ロジックは C=12 を選ぶことを確認(改修の効果を示す)。
+	if w := gridColumns(300, 33); w != 12 {
+		t.Errorf("gridColumns(300,33) = %d, want 12 (width-only)", w)
+	}
+}
+
+// TestOptimalColumnsSmallTerm は小さい端末で列数が候補上限を超えないことを検証する。
+// 幅40 → maxC = 40/24 = 1。高さによらず C=1。
+func TestOptimalColumnsSmallTerm(t *testing.T) {
+	if c := optimalColumns(40, 24, 1, 10); c != 1 {
+		t.Errorf("optimalColumns(small term) = %d, want 1", c)
+	}
+}
+
+// TestOptimalColumnsFewItems は銘柄数 < 列数候補のとき、C が銘柄数を超えないことを検証する。
+// 幅300 → maxC=12 だが銘柄3 → C<=3。
+func TestOptimalColumnsFewItems(t *testing.T) {
+	c := optimalColumns(300, 90, 1, 3)
+	if c < 1 || c > 3 {
+		t.Errorf("optimalColumns(3 items) = %d, want 1..3", c)
+	}
+}
+
+// TestOptimalColumnsNonTTYFallback は termRows<=0(高さ不明)のとき
+// 幅のみの gridColumns にフォールバックすることを検証する。
+func TestOptimalColumnsNonTTYFallback(t *testing.T) {
+	if c := optimalColumns(300, 0, 1, 33); c != gridColumns(300, 33) {
+		t.Errorf("optimalColumns(termRows=0) = %d, want gridColumns fallback %d", c, gridColumns(300, 33))
+	}
+}
+
+// TestRenderDashboardNonTTYCompat は非TTY(FillHeight=false, Watch=false)時に
+// 列数が従来どおり幅のみで決まる(gridColumns)ことを、出力行数から検証する。
+// japan(3銘柄), 幅100 → cols=min(3, 100/24=4)=3 → 1段。N=2固定。出力 = header1 + (2+3) = 6。
+func TestRenderDashboardNonTTYCompat(t *testing.T) {
+	data := map[string]*fetcher.Result{
+		"^N225":    {Price: 39500.5, Change: 100, ChangePct: 0.25, Series: []float64{1, 2, 3}},
+		"NKD=F":    {Price: 39400, Change: -50, ChangePct: -0.13, Series: []float64{3, 2, 1}},
+		"USDJPY=X": {Price: 145.12, Change: 0.3, ChangePct: 0.2, Series: []float64{1, 1, 2}},
+	}
+	out := RenderDashboard(data, []string{"japan"}, Options{
+		NoColor: true, TermWidth: 100, TermRows: 40, FillHeight: false, Watch: false,
+	})
+	got := len(strings.Split(out, "\n"))
+	if got != 6 {
+		t.Errorf("non-TTY lines = %d, want 6 (width-only cols, N=2 fixed)", got)
 	}
 }
