@@ -108,20 +108,24 @@ func TestSparklineDownsample(t *testing.T) {
 
 func TestGridColumns(t *testing.T) {
 	tests := []struct {
-		width int
-		want  int // 期待する列数(minTileW=24)
+		width     int
+		itemCount int
+		want      int // 期待する列数(minTileW=24)
 	}{
-		{60, 2},  // 60/24 = 2
-		{100, 4}, // 100/24 = 4
-		{200, 8}, // 200/24 = 8
-		{80, 3},  // 80/24 = 3
-		{10, 1},  // 極小でも1列
-		{0, 3},   // 0は80扱い → 3列
+		{60, 100, 2},  // 60/24 = 2
+		{100, 100, 4}, // 100/24 = 4
+		{200, 100, 8}, // 200/24 = 8
+		{80, 100, 3},  // 80/24 = 3
+		{10, 100, 1},  // 極小でも1列
+		{0, 100, 3},   // 0は80扱い → 3列
+		{300, 3, 3},   // 300/24=12 だが銘柄3つなので3列
+		{300, 1, 1},   // 銘柄1つなら1列
+		{200, 0, 8},   // itemCount<=0 は制約なし
 	}
 	for _, tt := range tests {
-		got := gridColumns(tt.width)
+		got := gridColumns(tt.width, tt.itemCount)
 		if got != tt.want {
-			t.Errorf("gridColumns(%d) = %d, want %d", tt.width, got, tt.want)
+			t.Errorf("gridColumns(%d,%d) = %d, want %d", tt.width, tt.itemCount, got, tt.want)
 		}
 	}
 }
@@ -376,13 +380,13 @@ func TestChartGradientSwitch(t *testing.T) {
 	r := &fetcher.Result{Price: 100, Change: 5, ChangePct: 1, Series: []float64{1, 2, 3, 4, 5}}
 	item := symbols.Item{Name: "X", Symbol: "X", Decimals: 2}
 	// truecolor 有効: チャート行に 38;2; を含む
-	tc := renderTile(item, r, 30, 3, true, false, false, true)
+	tc := renderTile(item, r, 30, 3, true, false, false, true, "日本")
 	joinedTC := strings.Join(tc, "\n")
 	if !strings.Contains(joinedTC, "38;2;") {
 		t.Errorf("truecolor chart should contain 24bit fg escape")
 	}
 	// truecolor 無効: 単色(ESC[32m 緑)で 38;2; を含まない
-	sc := renderTile(item, r, 30, 3, true, false, false, false)
+	sc := renderTile(item, r, 30, 3, true, false, false, false, "日本")
 	joinedSC := strings.Join(sc, "\n")
 	if strings.Contains(joinedSC, "38;2;") {
 		t.Errorf("single-color chart must not contain 24bit fg escape")
@@ -405,8 +409,8 @@ func TestLayoutWidths(t *testing.T) {
 	}
 	for _, c := range cases {
 		out := RenderDashboard(data, []string{"japan"}, Options{NoColor: true, TermWidth: c.width})
-		if gridColumns(c.width) != c.wantCols {
-			t.Errorf("width %d: cols = %d, want %d", c.width, gridColumns(c.width), c.wantCols)
+		if gridColumns(c.width, 100) != c.wantCols {
+			t.Errorf("width %d: cols = %d, want %d", c.width, gridColumns(c.width, 100), c.wantCols)
 		}
 		for _, ln := range strings.Split(out, "\n") {
 			if w := stringWidth(ln); w > c.width {
@@ -430,7 +434,7 @@ func TestRenderDashboardNoBlankLines(t *testing.T) {
 
 func TestRenderTileNA(t *testing.T) {
 	item := symbols.Item{Name: "日経平均", Symbol: "^N225", Decimals: 2}
-	lines := renderTile(item, nil, 27, 2, false, false, true, false)
+	lines := renderTile(item, nil, 27, 2, false, false, true, false, "日本")
 	// 上枠+情報1+チャート2+下枠 = 5
 	if len(lines) != 5 {
 		t.Fatalf("expected 5 lines, got %d", len(lines))
@@ -446,7 +450,7 @@ func TestRenderTileNA(t *testing.T) {
 
 func TestRenderTileWithData(t *testing.T) {
 	r := &fetcher.Result{Price: 39500.50, PrevClose: 39000.0, Change: 500.50, ChangePct: 1.28, Time: "15:00", Series: []float64{1, 2, 3, 4}}
-	lines := renderTile(symbols.Item{Name: "日経平均", Symbol: "^N225", Decimals: 2}, r, 40, 2, false, false, true, false)
+	lines := renderTile(symbols.Item{Name: "日経平均", Symbol: "^N225", Decimals: 2}, r, 40, 2, false, false, true, false, "日本")
 	joined := strings.Join(lines, "\n")
 	if !strings.Contains(joined, "39,500.50") {
 		t.Errorf("missing price:\n%s", joined)
@@ -463,7 +467,7 @@ func TestRenderTileWithData(t *testing.T) {
 func TestRenderTileChartRows(t *testing.T) {
 	r := &fetcher.Result{Price: 100, Change: 1, ChangePct: 1, Series: []float64{1, 2, 3, 4, 5}}
 	for _, n := range []int{1, 4, 8} {
-		lines := renderTile(symbols.Item{Name: "X", Symbol: "X", Decimals: 2}, r, 30, n, false, false, true, false)
+		lines := renderTile(symbols.Item{Name: "X", Symbol: "X", Decimals: 2}, r, 30, n, false, false, true, false, "日本")
 		if len(lines) != n+3 {
 			t.Errorf("chartN=%d: expected %d lines, got %d", n, n+3, len(lines))
 		}
@@ -472,16 +476,120 @@ func TestRenderTileChartRows(t *testing.T) {
 
 func TestRenderDashboardNA(t *testing.T) {
 	data := map[string]*fetcher.Result{"^N225": nil}
-	out := RenderDashboard(data, []string{"japan"}, Options{NoColor: true, TermWidth: 80})
+	// 幅100 / japan 3銘柄 → cols=3、各タイル幅 >= 33 でセクション名が枠線に入る。
+	out := RenderDashboard(data, []string{"japan"}, Options{NoColor: true, TermWidth: 100})
 	if !strings.Contains(out, "N/A") {
 		t.Error("expected N/A in output")
 	}
 	if !strings.Contains(out, "日本") {
-		t.Error("expected section title")
+		t.Error("expected section name embedded in tile border")
 	}
 	// 非カラーは ANSI エスケープを含まない
 	if strings.Contains(out, "\033[") {
 		t.Error("no-color output must not contain ANSI escapes")
+	}
+}
+
+// TestNoSectionHeadings はセクション見出し行(■/# 始まりの単独行)が出力されないことを検証する。
+func TestNoSectionHeadings(t *testing.T) {
+	data := map[string]*fetcher.Result{
+		"^N225":    {Price: 39500.5, Change: 100, ChangePct: 0.25, Series: []float64{1, 2, 3}},
+		"NKD=F":    {Price: 39400, Change: -50, ChangePct: -0.13, Series: []float64{3, 2, 1}},
+		"USDJPY=X": {Price: 145.12, Change: 0.3, ChangePct: 0.2, Series: []float64{1, 1, 2}},
+	}
+	out := RenderDashboard(data, []string{"japan", "us"}, Options{NoColor: true, TermWidth: 100})
+	for i, ln := range strings.Split(out, "\n") {
+		trimmed := strings.TrimSpace(ln)
+		if strings.HasPrefix(trimmed, "■") || strings.HasPrefix(trimmed, "# ") {
+			t.Errorf("section heading line found at %d: %q", i, ln)
+		}
+	}
+}
+
+// TestSectionNameOnBorder はセクション名がタイル上枠線に全角揃えで埋め込まれることを検証する。
+// 上枠線の表示幅が タイル外形幅と一致し、セクション名を含むこと(色付きモードで罫線 ┌ を使う)。
+func TestSectionNameOnBorder(t *testing.T) {
+	item := symbols.Item{Name: "日経平均", Symbol: "^N225", Decimals: 2}
+	r := &fetcher.Result{Price: 39500.5, Change: 100, ChangePct: 0.25, Series: []float64{1, 2, 3}}
+	// outerW=40 (>=30) → セクション名「日本」が上枠線に入る。罫線モード(ascii=false)。
+	lines := renderTile(item, r, 40, 2, false, false, false, false, "日本")
+	top := lines[0]
+	if w := stringWidth(top); w != 40 {
+		t.Errorf("top border width = %d, want 40 (full-width alignment): %q", w, top)
+	}
+	if !strings.Contains(top, "日本") {
+		t.Errorf("section name not on border: %q", top)
+	}
+	if !strings.HasPrefix(top, "┌") {
+		t.Errorf("expected box-drawing top border, got %q", top)
+	}
+	// 名称「日経平均」も含む
+	if !strings.Contains(top, "日経平均") {
+		t.Errorf("name missing from border: %q", top)
+	}
+}
+
+// TestSectionNameOmittedNarrow は タイル幅 30 桁未満でセクション名が省略されることを検証する。
+func TestSectionNameOmittedNarrow(t *testing.T) {
+	item := symbols.Item{Name: "日経平均", Symbol: "^N225", Decimals: 2}
+	// outerW=27 (<30) → セクション名なし。罫線モード。
+	lines := renderTile(item, nil, 27, 2, false, false, false, false, "日本")
+	if strings.Contains(lines[0], "日本") {
+		t.Errorf("section name should be omitted for narrow tile (<30): %q", lines[0])
+	}
+	// 上枠線の表示幅は外形幅に一致
+	if w := stringWidth(lines[0]); w != 27 {
+		t.Errorf("narrow top border width = %d, want 27", w)
+	}
+}
+
+// TestColsNotExceedItemCount は 列数が表示銘柄数を超えないことを検証する(銘柄3つ・端末300桁 → 3列)。
+func TestColsNotExceedItemCount(t *testing.T) {
+	data := map[string]*fetcher.Result{
+		"^N225":    {Price: 39500.5, Change: 100, ChangePct: 0.25, Series: []float64{1, 2, 3}},
+		"NKD=F":    {Price: 39400, Change: -50, ChangePct: -0.13, Series: []float64{3, 2, 1}},
+		"USDJPY=X": {Price: 145.12, Change: 0.3, ChangePct: 0.2, Series: []float64{1, 1, 2}},
+	}
+	// japan = 3銘柄、端末300桁。300/24=12 だが銘柄3つなので3列。
+	if c := gridColumns(300, 3); c != 3 {
+		t.Errorf("gridColumns(300,3) = %d, want 3", c)
+	}
+	// 上枠線(ASCII モードで + 始まり)の行は1行(段数=ceil(3/3)=1)、その中に + 始まりタイルが3つ。
+	out := RenderDashboard(data, []string{"japan"}, Options{NoColor: true, TermWidth: 300})
+	lines := strings.Split(out, "\n")
+	topLineCount := 0
+	for _, ln := range lines {
+		if strings.HasPrefix(ln, "+") {
+			topLineCount++
+		}
+	}
+	// ASCII 上枠線と下枠線がそれぞれ + 始まり。タイル段が1段なら上枠1行+下枠1行 = 2行。
+	if topLineCount != 2 {
+		t.Errorf("expected 2 border lines (1 tile-row: top+bottom), got %d", topLineCount)
+	}
+	// タイル行(枠線・内容)はすべて表示幅 300 ちょうど(ヘッダー行は除く)。
+	for i := 1; i < len(lines); i++ {
+		if w := stringWidth(lines[i]); w != 300 {
+			t.Errorf("tile line %d width = %d, want 300: %q", i, w, lines[i])
+		}
+	}
+}
+
+// TestTermWidth300LineWidths は TermWidth=300 のとき各タイル行の表示幅(全角=2換算)が 300 に一致することを検証する。
+// 1段に収まる銘柄数(japan 3銘柄, cols=3)で全段がフル幅になるようにする(最終行が欠けない)。
+func TestTermWidth300LineWidths(t *testing.T) {
+	data := map[string]*fetcher.Result{
+		"^N225":    {Price: 39500.5, Change: 100, ChangePct: 0.25, Series: []float64{1, 2, 3}},
+		"NKD=F":    {Price: 39400, Change: -50, ChangePct: -0.13, Series: []float64{3, 2, 1}},
+		"USDJPY=X": {Price: 145.12, Change: 0.3, ChangePct: 0.2, Series: []float64{1, 1, 2}},
+	}
+	out := RenderDashboard(data, []string{"japan"}, Options{NoColor: true, TermWidth: 300})
+	lines := strings.Split(out, "\n")
+	// 先頭のヘッダー行を除き、各タイル行の表示幅が 300。
+	for i := 1; i < len(lines); i++ {
+		if w := stringWidth(lines[i]); w != 300 {
+			t.Errorf("line %d width = %d, want 300: %q", i, w, lines[i])
+		}
 	}
 }
 
@@ -514,9 +622,9 @@ func TestRenderJSON(t *testing.T) {
 
 // TestFillHeightExact は FillHeight + TermRows 指定時に、
 // 出力行数が TermRows ちょうど(余白行なし)になることを検証する。
-// japan(3銘柄), 幅30 → cols=1 → 3タイル段。header=1, sectionTitle=1。
-// TermRows=40 → avail=40-2=38, tileH=38/3=12, baseN=9, rem=2 → 段N=[10,10,9]。
-// タイル外形高 = (10+3)+(10+3)+(9+3)=38。出力 = header1+title1+38 = 40。
+// japan(3銘柄), 幅30 → cols=min(3,1)=1 → 3タイル段。header=1(セクション見出し廃止)。
+// TermRows=40 → avail=40-1=39, tileH=39/3=13, baseN=10, rem=0 → 段N=[10,10,10]。
+// タイル外形高 = 3*(10+3)=39。出力 = header1+39 = 40。
 func TestFillHeightExact(t *testing.T) {
 	data := map[string]*fetcher.Result{
 		"^N225":    {Price: 39500.5, Change: 100, ChangePct: 0.25, Series: []float64{1, 2, 3}},
@@ -534,9 +642,9 @@ func TestFillHeightExact(t *testing.T) {
 
 // TestFillHeightCappedDiff は N が上限12で頭打ちになる場合、
 // 出力行数が TermRows 未満で、その差が「12上限とタイル段数の制約」で説明できることを検証する。
-// japan(3銘柄), 幅100 → cols=4 → 1タイル段。header=1, title=1, TermRows=40。
-// avail=38, tileH=38, baseN=35→12(上限), rem=0 → 段N=[12]。
-// 出力 = 1+1+(12+3)=17。差 = 40-17=23 はチャート上限12の制約による説明可能な残り。
+// japan(3銘柄), 幅100 → cols=min(3,4)=3 → 1タイル段。header=1, TermRows=40。
+// avail=39, tileH=39, baseN=36→12(上限), rem=0 → 段N=[12]。
+// 出力 = 1+(12+3)=16。差 = 40-16=24 はチャート上限12の制約による説明可能な残り。
 func TestFillHeightCappedDiff(t *testing.T) {
 	data := map[string]*fetcher.Result{
 		"^N225":    {Price: 39500.5, Change: 100, ChangePct: 0.25, Series: []float64{1, 2, 3}},
@@ -547,7 +655,7 @@ func TestFillHeightCappedDiff(t *testing.T) {
 		NoColor: true, TermWidth: 100, TermRows: 40, FillHeight: true,
 	})
 	got := len(strings.Split(out, "\n"))
-	want := 1 + 1 + (12 + 3) // header + title + 1段(N=12)
+	want := 1 + (12 + 3) // header + 1段(N=12)
 	if got != want {
 		t.Errorf("capped FillHeight lines = %d, want %d (cap 12)", got, want)
 	}
@@ -564,14 +672,14 @@ func TestNonTTYFixedN(t *testing.T) {
 		"NKD=F":    {Price: 39400, Change: -50, ChangePct: -0.13, Series: []float64{3, 2, 1}},
 		"USDJPY=X": {Price: 145.12, Change: 0.3, ChangePct: 0.2, Series: []float64{1, 1, 2}},
 	}
-	// 幅30→cols=1→3段。N=2固定なら各段 高さ5。出力 = 1+1+3*5 = 17。
+	// 幅30→cols=min(3,1)=1→3段。N=2固定なら各段 高さ5。出力 = 1+3*5 = 16(セクション見出し廃止)。
 	// TermRows を 40/100 と変えても結果は不変。
 	for _, rows := range []int{0, 40, 100} {
 		out := RenderDashboard(data, []string{"japan"}, Options{
 			NoColor: true, TermWidth: 30, TermRows: rows, // FillHeight=false, Watch=false
 		})
 		got := len(strings.Split(out, "\n"))
-		want := 1 + 1 + 3*(2+3)
+		want := 1 + 3*(2+3)
 		if got != want {
 			t.Errorf("non-TTY TermRows=%d: lines = %d, want %d (N=2 fixed)", rows, got, want)
 		}
