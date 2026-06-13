@@ -138,6 +138,7 @@ func clampCols(v, min, max int) int {
 }
 
 // applyTo converts UIState into render.Options fields.
+// Preserves Theme already set on opt.
 func (st UIState) applyTo(opt render.Options) render.Options {
 	switch st.ColorMode {
 	case ColorNormal:

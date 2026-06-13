@@ -44,6 +44,7 @@ type Options struct {
 	CryptoItems []symbols.Item // crypto セクションの並び替え済みアイテム(nil なら symbols 定義順)
 	Lang        string         // UI言語(空なら en)
 	RangeLabel  string         // 表示する時間軸ラベル(例: "1d", "1mo")
+	Theme       Theme          // 色テーマ
 }
 
 // locOf は opt の Loc を返す。nil なら time.Local。
@@ -54,9 +55,25 @@ func locOf(loc *time.Location) *time.Location {
 	return loc
 }
 
+// ResolveNoColor is a pure helper for unit testing NO_COLOR logic.
+// Priority: flag --no-color > NO_COLOR env (any value) > default (false).
+func ResolveNoColor(flagNoColor bool, noColorEnv string, envPresent bool) bool {
+	if flagNoColor {
+		return true
+	}
+	if envPresent {
+		return true
+	}
+	return false
+}
+
 // UseColor は色を使うかどうか判定
 func UseColor(noColor bool) bool {
 	if noColor {
+		return false
+	}
+	// Check NO_COLOR env (https://no-color.org)
+	if _, ok := os.LookupEnv("NO_COLOR"); ok {
 		return false
 	}
 	fi, err := os.Stdout.Stat()
@@ -165,6 +182,10 @@ func padLeft(s string, width int) string {
 }
 
 func fmtNum(value float64, decimals int) string {
+	return fmtNumLang(value, decimals, "en")
+}
+
+func fmtNumLang(value float64, decimals int, lang string) string {
 	neg := value < 0
 	if neg {
 		value = -value
@@ -173,26 +194,28 @@ func fmtNum(value float64, decimals int) string {
 	parts := strings.Split(s, ".")
 	intPart := parts[0]
 	n := len(intPart)
+	grp := i18n.GroupSep(lang)
+	dec := i18n.DecimalSep(lang)
 	if n > 3 {
 		var buf strings.Builder
 		rem := n % 3
 		if rem > 0 {
 			buf.WriteString(intPart[:rem])
 			if n > rem {
-				buf.WriteByte(',')
+				buf.WriteString(grp)
 			}
 		}
 		for i := rem; i < n; i += 3 {
 			buf.WriteString(intPart[i : i+3])
 			if i+3 < n {
-				buf.WriteByte(',')
+				buf.WriteString(grp)
 			}
 		}
 		intPart = buf.String()
 	}
 	result := intPart
 	if len(parts) > 1 {
-		result += "." + parts[1]
+		result += dec + parts[1]
 	}
 	if neg {
 		result = "-" + result
@@ -201,10 +224,14 @@ func fmtNum(value float64, decimals int) string {
 }
 
 func fmtChange(value float64, decimals int) string {
+	return fmtChangeLang(value, decimals, "en")
+}
+
+func fmtChangeLang(value float64, decimals int, lang string) string {
 	if value > 0 {
-		return "+" + fmtNum(value, decimals)
+		return "+" + fmtNumLang(value, decimals, lang)
 	}
-	return fmtNum(value, decimals)
+	return fmtNumLang(value, decimals, lang)
 }
 
 func fmtPct(value float64) string {
@@ -219,12 +246,17 @@ func fmtPct(value float64) string {
 
 // colorFor は騰落値に応じた色エスケープを返す(rg反転対応)
 func colorFor(change float64, useColor, redGreen bool) string {
+	return colorForTheme(change, useColor, redGreen, defaultTheme)
+}
+
+// colorForTheme は Theme を使った色エスケープ返却。
+func colorForTheme(change float64, useColor, redGreen bool, th Theme) string {
 	if !useColor {
 		return ""
 	}
-	up, down := green, red
+	up, down := th.UpColor, th.DownColor
 	if redGreen {
-		up, down = red, green
+		up, down = down, up
 	}
 	if change > 0 {
 		return up
@@ -252,9 +284,14 @@ func truecolorSupported() bool {
 
 // baseRGBFor は騰落値に応じたベース RGB を返す(rg反転対応)。
 func baseRGBFor(change float64, redGreen bool) [3]int {
-	up, down := greenRGB, redRGB
+	return baseRGBForTheme(change, redGreen, defaultTheme)
+}
+
+// baseRGBForTheme は Theme を使った RGB 返却。
+func baseRGBForTheme(change float64, redGreen bool, th Theme) [3]int {
+	up, down := th.UpRGB, th.DownRGB
 	if redGreen {
-		up, down = redRGB, greenRGB
+		up, down = down, up
 	}
 	if change < 0 {
 		return down
@@ -947,12 +984,34 @@ func isClosed(epoch int64, now time.Time) bool {
 	return now.Sub(time.Unix(epoch, 0)) > 30*time.Minute
 }
 
+// currencySymbol maps a currency code to its display symbol.
+func currencySymbol(code string) string {
+	switch code {
+	case "JPY", "CNY":
+		return "¥"
+	case "USD", "AUD", "CAD", "HKD", "SGD", "NZD":
+		return "$"
+	case "EUR":
+		return "€"
+	case "GBP":
+		return "£"
+	case "KRW":
+		return "₩"
+	default:
+		return ""
+	}
+}
+
 // outerW = タイル外形幅(枠線込み)、chartN = チャート行数。
 // secName が非空かつタイル幅 >= 30 桁のとき、上枠線の右端に bright black でセクション名を埋め込む。
 // 上枠線の銘柄名の前に国コード [XX](bright black)を付ける(Country が空なら省略)。
 // レイアウト: 上枠 + 騰落率バッジ行(左寄せ) + チャートN行 + 現在値行(太字)+前日比 + 下枠。
 // 返り行数は chartN + 4。
 func renderTile(item symbols.Item, r *fetcher.Result, outerW, chartN int, useColor, redGreen, ascii, truecolor bool, secName string) []string {
+	return renderTileL(item, r, outerW, chartN, useColor, redGreen, ascii, truecolor, secName, "en", defaultTheme)
+}
+
+func renderTileL(item symbols.Item, r *fetcher.Result, outerW, chartN int, useColor, redGreen, ascii, truecolor bool, secName string, lang string, th Theme) []string {
 	if outerW < minTileW {
 		outerW = minTileW
 	}
@@ -963,10 +1022,10 @@ func renderTile(item symbols.Item, r *fetcher.Result, outerW, chartN int, useCol
 	contentW := innerW - 2 // 左右1桁ずつの余白を除いた内容幅
 
 	bc := getBoxChars(ascii)
-	border := brightBlk
-	wclr := boldWhite
-	rst := reset
-	cc := brightBlk // 国コード色
+	border := th.BrightBlk
+	wclr := th.BoldWhite
+	rst := th.Reset
+	cc := th.BrightBlk // 国コード色
 	if !useColor {
 		border, wclr, rst, cc = "", "", "", ""
 	}
@@ -1027,13 +1086,15 @@ func renderTile(item symbols.Item, r *fetcher.Result, outerW, chartN int, useCol
 		return lines
 	}
 
-	clr := colorFor(r.Change, useColor, redGreen)
-	priceS := fmtNum(r.Price, item.Decimals)
-	changeS := fmtChange(r.Change, item.Decimals)
+	clr := colorForTheme(r.Change, useColor, redGreen, th)
+	// Currency symbol prefix for the price
+	sym := currencySymbol(r.Currency)
+	priceS := sym + fmtNumLang(r.Price, item.Decimals, lang)
+	changeS := fmtChangeLang(r.Change, item.Decimals, lang)
 	pctText := arrow(r.Change) + fmtPct(r.ChangePct)
 
 	// 上段: 騰落率バッジ(左寄せ)
-	badge := buildBadge(pctText, r.Change, useColor, redGreen)
+	badge := buildBadgeTheme(pctText, r.Change, useColor, redGreen, th)
 	badgePlainW := stringWidth(" " + pctText + " ")
 	badgeLine := badge + strings.Repeat(" ", maxInt(0, contentW-badgePlainW))
 	lines = append(lines, wrap(badgeLine))
@@ -1051,7 +1112,7 @@ func renderTile(item symbols.Item, r *fetcher.Result, outerW, chartN int, useCol
 		use:       useColor,
 		truecolor: truecolor,
 		closed:    closed,
-		base:      baseRGBFor(r.Change, redGreen),
+		base:      baseRGBForTheme(r.Change, redGreen, th),
 		mono:      clr,
 		reset:     rst,
 	}
@@ -1164,6 +1225,10 @@ func renderClockTile(outerW, chartN int, useColor, ascii bool, loc *time.Locatio
 // 騰落色の背景 + 太字白文字。下落=赤背景、変わらず=bright black 背景。
 // redGreen で背景色を反転。useColor=false なら従来の色なしテキスト。
 func buildBadge(text string, change float64, useColor, redGreen bool) string {
+	return buildBadgeTheme(text, change, useColor, redGreen, defaultTheme)
+}
+
+func buildBadgeTheme(text string, change float64, useColor, redGreen bool, th Theme) string {
 	content := " " + text + " "
 	if !useColor {
 		return content
@@ -1173,6 +1238,18 @@ func buildBadge(text string, change float64, useColor, redGreen bool) string {
 	up, down := bgGreen, bgRed
 	if redGreen {
 		up, down = bgRed, bgGreen
+	}
+	// For mono theme, always use gray badge
+	if th.Name == "mono" {
+		return fmt.Sprintf("\033[1;37;%dm%s\033[0m", bgGray, content)
+	}
+	// For highcontrast theme, use blue/orange backgrounds
+	if th.Name == "highcontrast" {
+		up = 44  // blue bg
+		down = 43 // yellow/orange bg (closest standard)
+		if redGreen {
+			up, down = down, up
+		}
 	}
 	var bg int
 	if change > 0 {
@@ -1340,6 +1417,15 @@ func RenderDashboard(data map[string]*fetcher.Result, sections []string, opt Opt
 	if ascii {
 		header = "kabuto - " + i18n.T(opt.Lang, "global_markets") + "    Updated: " + now
 	}
+	if opt.RangeLabel != "" {
+		header += "  [" + opt.RangeLabel + "]"
+	}
+
+	th := opt.Theme
+	if th.Reset == "" {
+		th = defaultTheme
+	}
+
 	if useColor {
 		// 端末幅まで反転を伸ばす
 		h := truncWidth(header, termWidth)
@@ -1348,7 +1434,7 @@ func RenderDashboard(data map[string]*fetcher.Result, sections []string, opt Opt
 		if pad < 0 {
 			pad = 0
 		}
-		lines = append(lines, reverse+h+strings.Repeat(" ", pad)+reset)
+		lines = append(lines, th.Reverse+h+strings.Repeat(" ", pad)+th.Reset)
 	} else {
 		lines = append(lines, truncWidth(header, termWidth))
 	}
@@ -1372,7 +1458,7 @@ func RenderDashboard(data map[string]*fetcher.Result, sections []string, opt Opt
 		var tiles [][]string
 		for ci, fi := range rowItems {
 			w := colWidths[ci]
-			tiles = append(tiles, renderTile(fi.item, data[fi.item.Symbol], w, chartN, useColor, opt.RedGreen, ascii, truecolor, fi.secName))
+			tiles = append(tiles, renderTileL(fi.item, data[fi.item.Symbol], w, chartN, useColor, opt.RedGreen, ascii, truecolor, fi.secName, opt.Lang, th))
 		}
 		// 最終行に空きセルがあれば、先頭の空き1セルに時計タイルを描く。
 		lastRow := end >= len(flat)

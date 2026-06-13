@@ -59,6 +59,9 @@ func usage() {
 	fmt.Fprintf(w, "      --tz NAME        Display times in the given IANA timezone (e.g. Asia/Tokyo)\n")
 	fmt.Fprintf(w, "      --country ISO2   Override detected home market country (e.g. JP, US, DE)\n")
 	fmt.Fprintf(w, "      --lang CODE      UI language (en, ja, zh, ko, de, fr, es; default from $LANG)\n")
+	fmt.Fprintf(w, "      --source auto|yahoo|stooq  Data source (default auto)\n")
+	fmt.Fprintf(w, "      --range 1d|5d|1mo|6mo|1y   History range (default 1d)\n")
+	fmt.Fprintf(w, "      --theme NAME     Color theme (default|mono|light|highcontrast)\n")
 	fmt.Fprintf(w, "  -v, --version        Print version and exit\n")
 }
 
@@ -74,6 +77,7 @@ func main() {
 	var lang string
 	var sourceFlag string
 	var rangeFlag string
+	var themeFlag string
 
 	flag.Usage = usage
 
@@ -92,6 +96,7 @@ func main() {
 	flag.BoolVar(&showVersion, "version", false, "Print version")
 	flag.StringVar(&sourceFlag, "source", "auto", "Data source (auto|yahoo|stooq)")
 	flag.StringVar(&rangeFlag, "range", "1d", "Time range (1d|5d|1mo|6mo|1y)")
+	flag.StringVar(&themeFlag, "theme", "default", "Color theme (default|mono|light|highcontrast)")
 	flag.Parse()
 
 	if showVersion {
@@ -100,6 +105,10 @@ func main() {
 	}
 
 	if jsonOut {
+		noColor = true
+	}
+	// Honor NO_COLOR env (https://no-color.org)
+	if _, ok := os.LookupEnv("NO_COLOR"); ok {
 		noColor = true
 	}
 	// whether stdout is a TTY (not a pipe/redirect)
@@ -158,7 +167,7 @@ func main() {
 		renderSections = order
 	}
 
-	opt := render.Options{NoColor: noColor, RedGreen: redGreen, Loc: loc, CryptoItems: cryptoItems, Lang: resolvedLang, RangeLabel: rangeFlag}
+	opt := render.Options{NoColor: noColor, RedGreen: redGreen, Loc: loc, CryptoItems: cryptoItems, Lang: resolvedLang, RangeLabel: rangeFlag, Theme: render.ThemeByName(themeFlag)}
 
 	// Resolve range and sources
 	rng := fetcher.ParseRange(rangeFlag)
