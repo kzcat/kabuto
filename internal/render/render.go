@@ -38,6 +38,7 @@ type Options struct {
 	TermRows    int            // 端末行数(0なら自動取得)
 	Watch       bool           // watch 時は高さを使い切る
 	FillHeight  bool           // stdout が TTY のとき高さを使い切る(非watchの1回表示でも適用)
+	ForceCols   int            // 手動列数指定(0=自動)
 	Loc         *time.Location // 表示用タイムゾーン(nil なら time.Local)
 	CryptoItems []symbols.Item // crypto セクションの並び替え済みアイテム(nil なら symbols 定義順)
 }
@@ -1208,6 +1209,30 @@ func DetectTermSize() (cols, rows int) {
 	return detectTermSize()
 }
 
+// ComputeCols returns the column count that RenderDashboard would use for the given options and item count.
+func ComputeCols(opt Options, itemCount int) int {
+	if opt.ForceCols > 0 {
+		c := opt.ForceCols
+		if c < 1 {
+			c = 1
+		}
+		if itemCount > 0 && c > itemCount {
+			c = itemCount
+		}
+		return c
+	}
+	termWidth := opt.TermWidth
+	if termWidth <= 0 {
+		termWidth = 80
+	}
+	termRows := opt.TermRows
+	tty := opt.Watch || opt.FillHeight
+	if tty && termRows > 0 {
+		return optimalColumns(termWidth, termRows, 1, itemCount)
+	}
+	return gridColumns(termWidth, itemCount)
+}
+
 // detectTermWidth は $COLUMNS または ioctl から端末幅を取得する。不可なら 80。
 func detectTermWidth() int {
 	c, _ := detectTermSize()
@@ -1255,11 +1280,20 @@ func RenderDashboard(data map[string]*fetcher.Result, sections []string, opt Opt
 	headerLines := 1 // ヘッダー1行のみ(セクション見出し行は廃止)
 
 	// 列数の決定:
+	//   ForceCols > 0 → 手動指定(1..len(flat) にクランプ)
 	//   TTY(Watch || FillHeight) かつ高さ既知 → 幅と高さの両方から全探索で最適化
 	//   非TTY → 従来どおり幅のみ(gridColumns)
 	tty := opt.Watch || opt.FillHeight
 	var cols int
-	if tty && termRows > 0 {
+	if opt.ForceCols > 0 {
+		cols = opt.ForceCols
+		if cols < 1 {
+			cols = 1
+		}
+		if len(flat) > 0 && cols > len(flat) {
+			cols = len(flat)
+		}
+	} else if tty && termRows > 0 {
 		cols = optimalColumns(termWidth, termRows, headerLines, len(flat))
 	} else {
 		cols = gridColumns(termWidth, len(flat))

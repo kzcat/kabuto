@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/kzcat/kabuto/internal/locale"
 	"github.com/kzcat/kabuto/internal/render"
 	"github.com/kzcat/kabuto/internal/symbols"
+	"github.com/kzcat/kabuto/internal/term"
 )
 
 var version = "0.2.0"
@@ -168,14 +170,18 @@ func main() {
 	}
 }
 
-// runWatch is the flicker-free auto-refresh loop.
-// It enters the alternate screen buffer with a hidden cursor and always
-// restores on SIGINT/SIGTERM. SIGWINCH triggers an immediate redraw from the
-// last data without re-fetching.
+// runWatch is the flicker-free auto-refresh loop with interactive key handling.
 func runWatch(sec int, collect func() []string, sections []string, opt render.Options) {
 	out := os.Stdout
 
+	// Try to enter raw mode for interactive keys.
+	var rawState *term.State
+	rawState, _ = term.MakeRaw(int(os.Stdin.Fd()))
+
 	restore := func() {
+		if rawState != nil {
+			term.Restore(int(os.Stdin.Fd()), rawState)
+		}
 		fmt.Fprint(out, showCur+leaveAlt)
 	}
 
@@ -196,7 +202,6 @@ func runWatch(sec int, collect func() []string, sections []string, opt render.Op
 	defer restore()
 
 	render1 := func(content string) {
-		// build into one buffer from ESC[H without clearing. ESC[K per line, ESC[J at end.
 		var b strings.Builder
 		b.WriteString(cursorTop)
 		lines := strings.Split(content, "\n")
@@ -211,20 +216,57 @@ func runWatch(sec int, collect func() []string, sections []string, opt render.Op
 		fmt.Fprint(out, b.String())
 	}
 
-	// cache the last data so resizes can reuse it
+	// UI state
+	uiState := UIState{
+		FillHeight: true,
+		MinCols:    1,
+	}
+	// Determine initial ColorMode from opt
+	if opt.NoColor {
+		uiState.ColorMode = ColorNone
+	} else if opt.RedGreen {
+		uiState.ColorMode = ColorJP
+	}
+
 	var lastData map[string]*fetcher.Result
+	var lastCols int // last actual column count used
 
 	draw := func() {
-		// re-read terminal size every frame before drawing
 		cols, rows := render.DetectTermSize()
-		o := opt
+		o := uiState.applyTo(opt)
 		o.TermWidth = cols
 		o.TermRows = rows
 		o.Watch = true
-		render1(render.RenderDashboard(lastData, sections, o))
+
+		// Determine effective sections
+		drawSections := sections
+		if uiState.Sections != nil {
+			drawSections = uiState.Sections
+		}
+
+		content := render.RenderDashboard(lastData, drawSections, o)
+
+		// Track actual cols for +/- key
+		// Approximate: use what render would compute
+		lastCols = render.ComputeCols(o, len(flatItems(drawSections, opt)))
+		uiState.MaxCols = len(flatItems(drawSections, opt))
+
+		if uiState.ShowHelp {
+			content = overlayHelp(content, cols, rows)
+		}
+		render1(content)
 	}
 
-	// initial fetch
+	// Start key reader goroutine
+	keyCh := make(chan Key, 8)
+	if rawState != nil {
+		go readKeys(os.Stdin, keyCh)
+	} else {
+		// Non-TTY: read stdin for 'q' or EOF
+		go readKeys(os.Stdin, keyCh)
+	}
+
+	// Initial fetch
 	lastData = fetcher.FetchAll(collect())
 	draw()
 
@@ -232,13 +274,69 @@ func runWatch(sec int, collect func() []string, sections []string, opt render.Op
 	defer ticker.Stop()
 	for {
 		select {
-		case <-winCh:
-			// resize: redraw from last data without re-fetching
-			draw()
+		case key, ok := <-keyCh:
+			if !ok {
+				// stdin closed (EOF)
+				return
+			}
+			newState, action := Dispatch(uiState, key, lastCols, sections)
+			uiState = newState
+			switch action {
+			case ActionQuit:
+				return
+			case ActionRefetch:
+				drawSections := sections
+				if uiState.Sections != nil {
+					drawSections = uiState.Sections
+				}
+				_ = drawSections
+				lastData = fetcher.FetchAll(collect())
+				draw()
+			default:
+				draw()
+			}
 		case <-ticker.C:
-			// periodic refresh: keep previous frame while fetching, then swap
-			lastData = fetcher.FetchAll(collect())
+			if !uiState.Paused {
+				lastData = fetcher.FetchAll(collect())
+			}
 			draw()
+		case <-winCh:
+			draw()
+		}
+	}
+}
+
+// flatItems counts items for the given sections.
+func flatItems(secs []string, opt render.Options) []struct{} {
+	count := 0
+	for _, k := range secs {
+		sec := symbols.Sections[k]
+		items := sec.Items
+		if k == "crypto" && opt.CryptoItems != nil {
+			items = opt.CryptoItems
+		}
+		count += len(items)
+	}
+	return make([]struct{}, count)
+}
+
+// readKeys reads from r one byte at a time and sends Keys on ch.
+// Closes ch on EOF or error.
+func readKeys(r io.Reader, ch chan<- Key) {
+	defer close(ch)
+	buf := make([]byte, 1)
+	for {
+		n, err := r.Read(buf)
+		if n > 0 {
+			b := buf[0]
+			if b == 0x1b {
+				ch <- Key{Esc: true}
+			} else {
+				ch <- Key{R: rune(b)}
+			}
+		}
+		if err != nil {
+			return
 		}
 	}
 }
