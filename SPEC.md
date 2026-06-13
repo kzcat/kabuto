@@ -1,7 +1,14 @@
-# sekaino-kabuka CLI 仕様書
+# kabuto 仕様書
 
-https://sekai-kabuka.com (世界の株価) の CLI 版。
-世界の株価指数・為替・暗号資産・商品先物をターミナルに一覧表示する。
+**kabuto** — 世界の株価指数・為替・暗号資産・商品先物をターミナルに一覧表示するグローバル市場ダッシュボード。
+当初 https://sekai-kabuka.com (世界の株価) の CLI クローンとして出発し、独自アプリ `kabuto` に発展。
+名称由来: 兜町(東京の金融街=日本のウォール街)+ 株(kabu)。
+
+- **module path**: `github.com/kzcat/kabuto`(git ユーザー kzcat 前提。リポジトリ未作成なら作成後にこのパスへ)
+- **コマンド名 / バイナリ名**: `kabuto`(`cmd/kabuto/main.go`)
+- **UI chrome(ヘッダー・ヘルプ・バージョン・曜日など装飾文言)は英語**。銘柄名などデータラベルは現状の表記を維持
+  - ヘッダー例: `kabuto ─ global markets    Updated: 2026-06-13 01:00:29 +09:00`
+  - 旧 `世界の株価 ─ sekai-kabuka CLI` 表記・旧 `sekai-kabuka` 文字列は全て置換する
 
 ## 方針
 
@@ -161,3 +168,58 @@ sekaino-kabuka/
 
 - 本リポジトリは当初 Python 実装だった。Go 移行に伴い `src/`, `tests/`, `pyproject.toml` は削除する
 - CLI インターフェース・表示仕様・銘柄構成は Python 版と完全互換を保つ
+
+---
+
+## アプリ化 (kabuto) — 機能拡張
+
+### 1. ヘルプ・UI chrome の英語化
+
+- `flag.Usage` を独自定義し、ヘルプ全文を英語に。各フラグ説明も英語。
+  - 例: `-s, --section NAME   Show only these sections (repeatable: japan,us,...)`
+- `-v/--version` 出力: `kabuto <version>`
+- ヘッダー行・時計タイルの曜日(`Sat` など英略)・エラーメッセージも英語
+- 銘柄名(日経平均など)はデータラベルなので変更しない
+
+### 2. ロケール / TZ による出し分け
+
+- **TZ**: 更新時刻の JST ハードコードを廃止し、`time.Local`(=`$TZ` 反映)で表示。タイムゾーンオフセット表記(例 `+09:00`)を併記。`--tz <IANA名>` で上書き可
+- **国検出**: `$LC_ALL` → `$LANG` の順に読み、`xx_YY` の `YY`(国コード)を抽出(例 `ja_JP.UTF-8` → `JP`)。取れなければ `US` を既定
+- **ホーム市場優先**: 検出国に対応するセクションを先頭へ並べ替える(例 JP→japan 先頭、US→us 先頭、GB/DE/FR→europe 先頭)。並べ替えのみで銘柄自体は全件維持
+- **BTC 建値**: 円圏(JP)は BTC-JPY を主表示、それ以外は BTC-USD を主表示(暗号資産セクションの並び順を入れ替えるだけ)
+- `--country <ISO2>` で国を明示上書き可。フラグ > 環境変数 > 既定(US)の優先順位
+- 非対話・JSON 出力時も TZ はローカル準拠にする
+
+### 3. ショートカットキー(対話的 watch モード)
+
+- **依存方針: 純標準ライブラリのみ**。raw mode は既存の ioctl 実装(`ioctl_unix.go`)同様 `syscall` で termios を操作(TCGETS/TCSETS 相当、`unix` build tag)。非 Unix 向けは no-op フォールバック(`ioctl_other.go` と同方針)
+- watch モード(`-w`)で stdin を raw + 非カノニカルにし、別 goroutine でキー読み取り。終了時(`q`/SIGINT/SIGTERM)に termios と画面(alt-screen・カーソル)を必ず復元
+- 既存のちらつき防止(alt-screen + 1バッファ書き込み)・SIGWINCH 追従を壊さないこと
+- キー割り当て:
+
+  | キー | 動作 | キー | 動作 |
+  |------|------|------|------|
+  | `q` / `Esc` | 終了 | `1`-`9` | 該当セクションのみ表示(トグル) |
+  | `r` | 即時再取得 | `0` / `a` | 全セクション表示 |
+  | `c` | 色モード循環(通常→日本式→色なし) | `f` | フルハイト ON/OFF |
+  | `+` / `-` | 列数を手動増減(自動に戻すキー `=`) | `?` / `h` | ヘルプ・オーバーレイ表示 |
+  | `Space` | 自動更新の一時停止/再開 | | |
+
+- 非 TTY(パイプ)時はキー処理を行わず従来どおり1回出力
+- ヘルプ・オーバーレイは画面中央にキー一覧を枠表示。任意キーで閉じる
+
+### 4. 配布
+
+- **GoReleaser** (`.goreleaser.yaml`): darwin/linux/windows × amd64/arm64 のバイナリ、チェックサム、changelog
+- **GitHub Actions** (`.github/workflows/release.yml`): タグ push で goreleaser 実行
+- **Homebrew tap**: goreleaser の `brews:`(別リポ `kzcat/homebrew-tap` を想定)。`brew install kzcat/tap/kabuto`
+- **go install**: `go install github.com/kzcat/kabuto/cmd/kabuto@latest`(公開モジュール化が前提)
+- **Scoop / AUR / Nix**: goreleaser の `scoops:` を設定。AUR・Nix は README に手順を記載(後追い)
+- README に各インストール方法を英語で記載
+- **注意**: 実際の GitHub リポジトリ作成・タグ push・初回リリースは外部公開アクションのためユーザー確認後に実施。設定ファイル一式の用意までを本作業の範囲とする
+
+### 品質要件(更新)
+
+- `go vet ./...` クリーン / `go test ./...` 全パス(ネットワーク不要)
+- `go build -o kabuto ./cmd/kabuto` で単一バイナリ
+- 旧 `sekai-kabuka` の文字列・ディレクトリ・module path が残っていないこと(`grep -rn sekai-kabuka` がヒットしない。README の沿革説明を除く)

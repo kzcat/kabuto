@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kaz/sekai-kabuka/internal/fetcher"
-	"github.com/kaz/sekai-kabuka/internal/symbols"
+	"github.com/kzcat/kabuto/internal/fetcher"
+	"github.com/kzcat/kabuto/internal/symbols"
 )
 
 // TestTileLayoutOrder は新レイアウト(上=バッジ、中=チャート、下=現在値+前日比)を検証する。
@@ -170,7 +170,7 @@ func TestClockTilePresent(t *testing.T) {
 		"USDJPY=X": {Price: 145.12, Change: 0.3, ChangePct: 0.2, Series: []float64{1, 1, 2}},
 	}
 	out := RenderDashboard(data, []string{"japan"}, Options{NoColor: true, TermWidth: 60})
-	if !strings.Contains(out, "時計") {
+	if !strings.Contains(out, "Clock") {
 		t.Errorf("clock tile should be present when last row has empty cell:\n%s", out)
 	}
 }
@@ -184,14 +184,14 @@ func TestClockTileAbsent(t *testing.T) {
 		"USDJPY=X": {Price: 145.12, Change: 0.3, ChangePct: 0.2, Series: []float64{1, 1, 2}},
 	}
 	out := RenderDashboard(data, []string{"japan"}, Options{NoColor: true, TermWidth: 150})
-	if strings.Contains(out, "時計") {
+	if strings.Contains(out, "Clock") {
 		t.Errorf("clock tile should be absent when last row is full:\n%s", out)
 	}
 }
 
 // TestClockTileDimensions は時計タイルの行数・幅が通常タイルと一致することを検証する。
 func TestClockTileDimensions(t *testing.T) {
-	lines := renderClockTile(40, 3, false, false)
+	lines := renderClockTile(40, 3, false, false, nil)
 	if len(lines) != 3+tileChrome {
 		t.Errorf("clock tile lines = %d, want %d", len(lines), 3+tileChrome)
 	}
@@ -200,14 +200,14 @@ func TestClockTileDimensions(t *testing.T) {
 			t.Errorf("clock tile line %d width = %d, want 40: %q", i, w, ln)
 		}
 	}
-	if !strings.Contains(lines[0], "時計") {
+	if !strings.Contains(lines[0], "Clock") {
 		t.Errorf("clock tile title missing: %q", lines[0])
 	}
 }
 
 // TestClockTileNoColorCompat は --no-color 時に時計タイルが ANSI エスケープを含まないことを検証する。
 func TestClockTileNoColorCompat(t *testing.T) {
-	lines := renderClockTile(40, 3, false, true)
+	lines := renderClockTile(40, 3, false, true, nil)
 	for _, ln := range lines {
 		if strings.Contains(ln, "\033[") {
 			t.Errorf("no-color clock tile must not contain ANSI escapes: %q", ln)

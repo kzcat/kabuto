@@ -9,8 +9,8 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/kaz/sekai-kabuka/internal/fetcher"
-	"github.com/kaz/sekai-kabuka/internal/symbols"
+	"github.com/kzcat/kabuto/internal/fetcher"
+	"github.com/kzcat/kabuto/internal/symbols"
 )
 
 const (
@@ -30,16 +30,24 @@ var (
 	redRGB   = [3]int{220, 40, 40}
 )
 
-var jst = time.FixedZone("JST", 9*3600)
-
 // Options は描画オプション
 type Options struct {
-	NoColor    bool // 色を使わない
-	RedGreen   bool // 上昇=赤/下落=緑 に反転(日本式)
-	TermWidth  int  // 端末幅(0なら自動取得)
-	TermRows   int  // 端末行数(0なら自動取得)
-	Watch      bool // watch 時は高さを使い切る
-	FillHeight bool // stdout が TTY のとき高さを使い切る(非watchの1回表示でも適用)
+	NoColor     bool           // 色を使わない
+	RedGreen    bool           // 上昇=赤/下落=緑 に反転(日本式)
+	TermWidth   int            // 端末幅(0なら自動取得)
+	TermRows    int            // 端末行数(0なら自動取得)
+	Watch       bool           // watch 時は高さを使い切る
+	FillHeight  bool           // stdout が TTY のとき高さを使い切る(非watchの1回表示でも適用)
+	Loc         *time.Location // 表示用タイムゾーン(nil なら time.Local)
+	CryptoItems []symbols.Item // crypto セクションの並び替え済みアイテム(nil なら symbols 定義順)
+}
+
+// locOf は opt の Loc を返す。nil なら time.Local。
+func locOf(loc *time.Location) *time.Location {
+	if loc == nil {
+		return time.Local
+	}
+	return loc
 }
 
 // UseColor は色を使うかどうか判定
@@ -1073,9 +1081,9 @@ func maxInt(a, b int) int {
 	return b
 }
 
-// renderClockTile は時計タイルを描く。タイトル「時計」、中央に日付(例 6/13(金))と
+// renderClockTile は時計タイルを描く。タイトル「Clock」、中央に日付(例 6/13(Fri))と
 // 時刻(例 00:29)を2行・太字白で中央寄せ。全行数は renderTile と同じ chartN + tileChrome。
-func renderClockTile(outerW, chartN int, useColor, ascii bool) []string {
+func renderClockTile(outerW, chartN int, useColor, ascii bool, loc *time.Location) []string {
 	if outerW < minTileW {
 		outerW = minTileW
 	}
@@ -1093,12 +1101,12 @@ func renderClockTile(outerW, chartN int, useColor, ascii bool) []string {
 		border, wclr, rst = "", "", ""
 	}
 
-	now := time.Now().In(jst)
-	weekdays := []string{"日", "月", "火", "水", "木", "金", "土"}
+	now := time.Now().In(locOf(loc))
+	weekdays := []string{"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"}
 	dateStr := fmt.Sprintf("%d/%d(%s)", int(now.Month()), now.Day(), weekdays[int(now.Weekday())])
 	timeStr := now.Format("15:04")
 
-	top := buildTopBorderW(bc, border, rst, "時計", stringWidth("時計"), "", innerW)
+	top := buildTopBorderW(bc, border, rst, "Clock", stringWidth("Clock"), "", innerW)
 	bottom := border + bc.bl + strings.Repeat(bc.h, innerW) + bc.br + rst
 	left := border + bc.v + rst
 	right := border + bc.v + rst
@@ -1218,6 +1226,7 @@ func RenderDashboard(data map[string]*fetcher.Result, sections []string, opt Opt
 	useColor := !opt.NoColor
 	ascii := opt.NoColor // 非カラー時は ASCII 罫線にフォールバック
 	truecolor := useColor && truecolorSupported()
+	loc := locOf(opt.Loc)
 	termWidth := opt.TermWidth
 	termRows := opt.TermRows
 	if termWidth <= 0 {
@@ -1230,10 +1239,15 @@ func RenderDashboard(data map[string]*fetcher.Result, sections []string, opt Opt
 	}
 
 	// 表示対象の全銘柄を定義順のまま1列に展開する。
+	// crypto セクションは国に応じた並び替え済みアイテム(opt.CryptoItems)があれば優先する。
 	var flat []flatItem
 	for _, secKey := range keys {
 		sec := symbols.Sections[secKey]
-		for _, it := range sec.Items {
+		items := sec.Items
+		if secKey == "crypto" && opt.CryptoItems != nil {
+			items = opt.CryptoItems
+		}
+		for _, it := range items {
 			flat = append(flat, flatItem{item: it, secName: sec.Title})
 		}
 	}
@@ -1272,10 +1286,10 @@ func RenderDashboard(data map[string]*fetcher.Result, sections []string, opt Opt
 	}
 
 	var lines []string
-	now := time.Now().In(jst).Format("2006-01-02 15:04:05 JST")
-	header := "世界の株価 ─ sekai-kabuka CLI    更新: " + now
+	now := time.Now().In(loc).Format("2006-01-02 15:04:05 -07:00")
+	header := "kabuto ─ global markets    Updated: " + now
 	if ascii {
-		header = "世界の株価 - sekai-kabuka CLI    更新: " + now
+		header = "kabuto - global markets    Updated: " + now
 	}
 	if useColor {
 		// 端末幅まで反転を伸ばす
@@ -1316,7 +1330,7 @@ func RenderDashboard(data map[string]*fetcher.Result, sections []string, opt Opt
 		if lastRow && len(rowItems) < cols {
 			clockCol := len(rowItems) // 先頭の空きセルの列インデックス
 			w := colWidths[clockCol]
-			tiles = append(tiles, renderClockTile(w, chartN, useColor, ascii))
+			tiles = append(tiles, renderClockTile(w, chartN, useColor, ascii, loc))
 		}
 		// 行ごとに横連結(ギャップ0)
 		for li := 0; li < tileH; li++ {
@@ -1350,8 +1364,9 @@ type JSONSection struct {
 	Items []JSONItem `json:"items"`
 }
 
-// RenderJSON はJSON出力文字列を生成
-func RenderJSON(data map[string]*fetcher.Result, sections []string) string {
+// RenderJSON はJSON出力文字列を生成。時刻は loc(nil なら time.Local)準拠で整形する。
+func RenderJSON(data map[string]*fetcher.Result, sections []string, loc *time.Location) string {
+	l := locOf(loc)
 	keys := sections
 	if len(keys) == 0 {
 		keys = symbols.SectionOrder
@@ -1368,7 +1383,11 @@ func RenderJSON(data map[string]*fetcher.Result, sections []string) string {
 				price := roundTo(r.Price, item.Decimals)
 				change := roundTo(r.Change, item.Decimals)
 				pct := roundTo(r.ChangePct, 2)
+				// Epoch から loc 準拠で "15:04" を再生成する(--tz 反映)。
 				t := r.Time
+				if r.Epoch > 0 {
+					t = time.Unix(r.Epoch, 0).In(l).Format("15:04")
+				}
 				epoch := r.Epoch
 				series := make([]float64, len(r.Series))
 				for i, v := range r.Series {

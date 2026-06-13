@@ -41,8 +41,6 @@ func getBaseURLs() []string {
 	return baseURLs
 }
 
-var jst = time.FixedZone("JST", 9*3600)
-
 type chartResponse struct {
 	Chart struct {
 		Result []struct {
@@ -106,7 +104,7 @@ func fetchOne(symbol string, client *http.Client) *Result {
 		if meta.ChartPreviousClose != 0 {
 			pct = change / meta.ChartPreviousClose * 100
 		}
-		t := time.Unix(meta.RegularMarketTime, 0).In(jst)
+		t := time.Unix(meta.RegularMarketTime, 0).In(time.Local)
 		var series []float64
 		if len(cr.Chart.Result[0].Indicators.Quote) > 0 {
 			series = buildSeries(cr.Chart.Result[0].Indicators.Quote[0].Close, meta.ChartPreviousClose)
