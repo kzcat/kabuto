@@ -1,6 +1,9 @@
 package main
 
-import "github.com/kzcat/kabuto/internal/render"
+import (
+	"github.com/kzcat/kabuto/internal/fetcher"
+	"github.com/kzcat/kabuto/internal/render"
+)
 
 // Color mode constants.
 const (
@@ -35,6 +38,7 @@ type UIState struct {
 	ShowHelp   bool
 	MinCols    int
 	MaxCols    int
+	Range      fetcher.Range
 }
 
 // Dispatch is a pure function: given current state + key + context, returns new state + action.
@@ -89,6 +93,20 @@ func Dispatch(st UIState, key Key, currentCols int, allSections []string) (UISta
 	case '?', 'h':
 		st.ShowHelp = true
 		return st, ActionRedraw
+	case '[':
+		prev := st.Range.Prev()
+		if prev != st.Range {
+			st.Range = prev
+			return st, ActionRefetch
+		}
+		return st, ActionNone
+	case ']':
+		next := st.Range.Next()
+		if next != st.Range {
+			st.Range = next
+			return st, ActionRefetch
+		}
+		return st, ActionNone
 	}
 
 	// 1-9: section toggle

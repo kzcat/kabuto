@@ -43,6 +43,7 @@ type Options struct {
 	Loc         *time.Location // 表示用タイムゾーン(nil なら time.Local)
 	CryptoItems []symbols.Item // crypto セクションの並び替え済みアイテム(nil なら symbols 定義順)
 	Lang        string         // UI言語(空なら en)
+	RangeLabel  string         // 表示する時間軸ラベル(例: "1d", "1mo")
 }
 
 // locOf は opt の Loc を返す。nil なら time.Local。

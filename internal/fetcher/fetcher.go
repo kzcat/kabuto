@@ -29,6 +29,7 @@ type Result struct {
 	Time      string
 	Epoch     int64     // regularMarketTime の epoch 秒
 	Series    []float64 // intraday の終値系列(null は前値で補間)
+	Currency  string    // meta.currency from Yahoo
 }
 
 // BaseURLOverride はテスト用にURLを差し替えるためのフック
@@ -48,6 +49,7 @@ type chartResponse struct {
 				RegularMarketPrice float64 `json:"regularMarketPrice"`
 				ChartPreviousClose float64 `json:"chartPreviousClose"`
 				RegularMarketTime  int64   `json:"regularMarketTime"`
+				Currency           string  `json:"currency"`
 			} `json:"meta"`
 			Indicators struct {
 				Quote []struct {
@@ -117,18 +119,22 @@ func fetchOne(symbol string, client *http.Client) *Result {
 			Time:      t.Format("15:04"),
 			Epoch:     meta.RegularMarketTime,
 			Series:    series,
+			Currency:  meta.Currency,
 		}
 	}
 	return nil
 }
 
-// FetchAll は複数銘柄を並列取得する
-func FetchAll(symbols []string) map[string]*Result {
+// FetchAll は複数銘柄を並列取得する (Range-aware, Source-aware)
+func FetchAll(symbols []string, rng Range, sources ...Source) map[string]*Result {
 	client := &http.Client{Timeout: timeout}
 	results := make(map[string]*Result)
 	var mu sync.Mutex
 	sem := make(chan struct{}, maxWorkers)
 	var wg sync.WaitGroup
+
+	// Disable cache when BaseURLOverride is set (test mode)
+	useCache := BaseURLOverride == nil
 
 	for _, s := range symbols {
 		wg.Add(1)
@@ -136,7 +142,44 @@ func FetchAll(symbols []string) map[string]*Result {
 		go func(symbol string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			r := fetchOne(symbol, client)
+
+			var r *Result
+
+			// Check cache first
+			if useCache {
+				if cached, fresh := cacheGet(symbol, rng); fresh && cached != nil {
+					mu.Lock()
+					results[symbol] = cached
+					mu.Unlock()
+					return
+				}
+			}
+
+			if len(sources) > 0 {
+				for _, src := range sources {
+					res, err := src.Fetch(symbol, rng, client)
+					if err == nil && res != nil {
+						r = res
+						break
+					}
+				}
+			} else {
+				// Legacy path: use fetchOne (for backward compat with existing tests)
+				r = fetchOne(symbol, client)
+			}
+
+			// On failure, try stale cache
+			if r == nil && useCache {
+				if cached, _ := cacheGet(symbol, rng); cached != nil {
+					r = cached
+				}
+			}
+
+			// Update cache on success
+			if r != nil && useCache {
+				cacheSet(symbol, rng, r)
+			}
+
 			mu.Lock()
 			results[symbol] = r
 			mu.Unlock()

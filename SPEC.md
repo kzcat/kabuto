@@ -242,3 +242,64 @@ sekaino-kabuka/
 - **render / JSON**: 表示名は解決後の言語名を使う。`--json` の `name` も `--lang` で解決した名前にする(`symbol` キーは不変なので機械可読性は保たれる)
 - **回帰防止**: 既存機能(描画・キー操作・ロケール並べ替え・配布)を壊さない。`go vet`/`go test` が通り続けること
 - **テスト**: 言語検出(各種 LANG 値→lang)、`--lang` 優先順位、カタログのフォールバック(未収録キー→en→キー名)、シンボル/セクション名解決を純粋関数でテスト(ネットワーク不要)
+
+---
+
+## グローバル普及対応(改善実装) — RESEARCH.md ロードマップの実装仕様
+
+依存ゼロ(Go 標準ライブラリのみ)の原則は維持する。外部 TOML ライブラリ等は追加しない。
+
+### G1. デモ(README に GIF/asciinema)
+- charmbracelet/vhs のスクリプト `demo/demo.tape` を用意し、ダッシュボード表示→`c`色循環→`1`絞り込み→`?`ヘルプ→`q`終了 を見せる
+- vhs があれば `demo/kabuto.gif` を生成、無ければ生成手順を README に明記
+- README 冒頭に GIF を埋め込む
+
+### G2. カスタム銘柄 + 設定ファイル
+- 設定ファイル(**JSON、stdlib の encoding/json のみ**。TOML は外部依存になるため不採用): 既定 `~/.config/kabuto/config.json`。`--config PATH` で上書き
+- スキーマ例:
+  ```json
+  {
+    "lang": "ja", "country": "JP", "theme": "default", "range": "1d", "source": "auto",
+    "sections": [{"key":"watch","title":"Watchlist","items":[{"name":"Tesla","symbol":"TSLA","country":"US","decimals":2}]}],
+    "section_order": ["watch","japan","us"]
+  }
+  ```
+- カスタムセクションは組み込みセクションとマージ。`section_order` で表示順制御
+- `--add SYMBOL[:COUNTRY[:DECIMALS]]`(repeatable)で一時的に "Watchlist" セクションへ銘柄追加
+- 優先順位: CLI フラグ > 設定ファイル > 環境変数 > 既定。設定ファイルが無くても従来どおり動く(後方互換)
+
+### G3. データソース抽象化 + 第2ソース + キャッシュ
+- `Source` インターフェース化。`YahooSource`(現行 query2→query1)を実装1とし、**APIキー不要の第2ソース**(Stooq の CSV `https://stooq.com/q/l/` 等)を実装2に
+- `--source auto|yahoo|stooq`(既定 auto = Yahoo 優先、失敗時 stooq フォールバック)
+- ディスクキャッシュ `~/.cache/kabuto/`(symbol+range キー、TTL 短め例 60s)。レート制限/障害時はキャッシュで凌ぐ
+- テストはネットワーク不要(httptest + フィクスチャ)を維持
+
+### G4. ロケール準拠の数値/通貨書式
+- 桁区切り・小数点を言語/ロケールに合わせる(en `1,234.56` / de `1.234,56` / fr `1 234,56` 等)。i18n に数値書式ルールを持たせる
+- 通貨記号/表記: fetcher が `meta.currency` を取得済みなのでそれを使い、価格に通貨を反映(例 `¥66,020` `$51,373` `€8,345`)。バッジ/前日比は従来どおり
+- 桁揃え(全角=2)を壊さないこと
+
+### G5. NO_COLOR 規約 + 発見性
+- 環境変数 `NO_COLOR`(値の有無に関わらず存在すれば)で色無効化(https://no-color.org 準拠)。`--no-color` と同等。優先: `--no-color` フラグ > `NO_COLOR` env > 既定
+- `docs/SUBMISSIONS.md` に Terminal Trove / awesome-tuis への掲載ドラフト文を用意(実際の投稿は公開後)
+
+### G6. 履歴/時間軸
+- `--range 1d|5d|1mo|6mo|1y`(既定 1d)。Yahoo の range/interval にマップ(1d→5m, 5d→15m, 1mo→1d, 6mo→1d, 1y→1wk 等)
+- 対話キーで時間軸切替(`[` 短く / `]` 長く、またはキー表に追記)。チャートは既存の点字エリアに系列を流すだけ
+
+### G7. カラーテーマ
+- 色定数(green/red/RGB 等)を Theme 構造体に集約。`--theme default|mono|light|highcontrast`(既定 default)+ 設定ファイル
+- カラーブラインド配慮の `highcontrast`/`mono` を用意。`--rg`(日本式反転)はテーマと直交で維持
+
+### G8. 配布拡充(AUR/Nix/winget)
+- GoReleaser に winget(`winget:` または publisher 連携)、AUR(`aurs:` で PKGBUILD 自動生成、`kzcat/kabuto-bin` AUR リポジトリ想定)、Nix(`flake.nix` をリポジトリに用意)を追加
+- README の Installation に各手順を追記
+
+### CLI フラグ最終形(英語ヘルプに反映)
+```
+--add SYMBOL[:CC[:DEC]]  Add ad-hoc symbol to Watchlist (repeatable)
+--config PATH            Config file (default ~/.config/kabuto/config.json)
+--source auto|yahoo|stooq Data source (default auto)
+--range 1d|5d|1mo|6mo|1y History range (default 1d)
+--theme NAME             Color theme (default|mono|light|highcontrast)
+```

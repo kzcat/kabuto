@@ -72,6 +72,8 @@ func main() {
 	var tz string
 	var country string
 	var lang string
+	var sourceFlag string
+	var rangeFlag string
 
 	flag.Usage = usage
 
@@ -88,6 +90,8 @@ func main() {
 	flag.StringVar(&lang, "lang", "", "UI language (en, ja, zh, ko, de, fr, es)")
 	flag.BoolVar(&showVersion, "v", false, "Print version")
 	flag.BoolVar(&showVersion, "version", false, "Print version")
+	flag.StringVar(&sourceFlag, "source", "auto", "Data source (auto|yahoo|stooq)")
+	flag.StringVar(&rangeFlag, "range", "1d", "Time range (1d|5d|1mo|6mo|1y)")
 	flag.Parse()
 
 	if showVersion {
@@ -154,13 +158,17 @@ func main() {
 		renderSections = order
 	}
 
-	opt := render.Options{NoColor: noColor, RedGreen: redGreen, Loc: loc, CryptoItems: cryptoItems, Lang: resolvedLang}
+	opt := render.Options{NoColor: noColor, RedGreen: redGreen, Loc: loc, CryptoItems: cryptoItems, Lang: resolvedLang, RangeLabel: rangeFlag}
+
+	// Resolve range and sources
+	rng := fetcher.ParseRange(rangeFlag)
+	sources := resolveSources(sourceFlag)
 
 	if watchSec > 0 && !jsonOut {
-		runWatch(watchSec, collectSymbols, renderSections, opt)
+		runWatch(watchSec, collectSymbols, renderSections, opt, rng, sources)
 	} else {
 		syms := collectSymbols()
-		data := fetcher.FetchAll(syms)
+		data := fetcher.FetchAll(syms, rng, sources...)
 		if jsonOut {
 			fmt.Println(render.RenderJSON(data, renderSections, loc, resolvedLang))
 		} else {
@@ -178,7 +186,7 @@ func main() {
 }
 
 // runWatch is the flicker-free auto-refresh loop with interactive key handling.
-func runWatch(sec int, collect func() []string, sections []string, opt render.Options) {
+func runWatch(sec int, collect func() []string, sections []string, opt render.Options, rng fetcher.Range, sources []fetcher.Source) {
 	out := os.Stdout
 
 	// Try to enter raw mode for interactive keys.
@@ -226,6 +234,7 @@ func runWatch(sec int, collect func() []string, sections []string, opt render.Op
 	uiState := UIState{
 		FillHeight: true,
 		MinCols:    1,
+		Range:      rng,
 	}
 	// Determine initial ColorMode from opt
 	if opt.NoColor {
@@ -273,7 +282,7 @@ func runWatch(sec int, collect func() []string, sections []string, opt render.Op
 	}
 
 	// Initial fetch
-	lastData = fetcher.FetchAll(collect())
+	lastData = fetcher.FetchAll(collect(), uiState.Range, sources...)
 	draw()
 
 	ticker := time.NewTicker(time.Duration(sec) * time.Second)
@@ -296,19 +305,32 @@ func runWatch(sec int, collect func() []string, sections []string, opt render.Op
 					drawSections = uiState.Sections
 				}
 				_ = drawSections
-				lastData = fetcher.FetchAll(collect())
+				opt.RangeLabel = uiState.Range.String()
+				lastData = fetcher.FetchAll(collect(), uiState.Range, sources...)
 				draw()
 			default:
 				draw()
 			}
 		case <-ticker.C:
 			if !uiState.Paused {
-				lastData = fetcher.FetchAll(collect())
+				lastData = fetcher.FetchAll(collect(), uiState.Range, sources...)
 			}
 			draw()
 		case <-winCh:
 			draw()
 		}
+	}
+}
+
+// resolveSources returns the Source slice for the --source flag value.
+func resolveSources(s string) []fetcher.Source {
+	switch s {
+	case "yahoo":
+		return []fetcher.Source{&fetcher.YahooSource{}}
+	case "stooq":
+		return []fetcher.Source{&fetcher.StooqSource{}}
+	default: // "auto"
+		return []fetcher.Source{&fetcher.YahooSource{}, &fetcher.StooqSource{}}
 	}
 }
 

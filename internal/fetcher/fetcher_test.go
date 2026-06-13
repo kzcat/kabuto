@@ -134,7 +134,7 @@ func TestFetchAll(t *testing.T) {
 	BaseURLOverride = []string{ts.URL + "/%s"}
 	defer func() { BaseURLOverride = nil }()
 
-	results := FetchAll([]string{"^N225", "^DJI"})
+	results := FetchAll([]string{"^N225", "^DJI"}, Range1D)
 	if len(results) != 2 {
 		t.Fatalf("expected 2 results, got %d", len(results))
 	}
