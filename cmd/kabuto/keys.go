@@ -43,6 +43,11 @@ type UIState struct {
 
 // Dispatch is a pure function: given current state + key + context, returns new state + action.
 func Dispatch(st UIState, key Key, currentCols int, allSections []string) (UIState, Action) {
+	// Ctrl+C (ETX, byte 0x03) always quits. Raw mode disables ISIG, so it
+	// arrives as a literal byte instead of raising SIGINT.
+	if key.R == 3 {
+		return st, ActionQuit
+	}
 	// If help is showing, any key closes it (except q/Esc which quit).
 	if st.ShowHelp {
 		if key.Esc || key.R == 'q' {

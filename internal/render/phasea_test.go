@@ -162,56 +162,16 @@ func TestClosedMarketGrey(t *testing.T) {
 	}
 }
 
-// TestClockTilePresent は最終行に空きセルがあるとき時計タイルが描かれることを検証する。
-func TestClockTilePresent(t *testing.T) {
+// TestNoClockTile は最終行に空きセルがあっても時計タイルを描かないことを検証する。
+func TestNoClockTile(t *testing.T) {
 	data := map[string]*fetcher.Result{
 		"^N225":    {Price: 39500.5, Change: 100, ChangePct: 0.25, Series: []float64{1, 2, 3}},
 		"NKD=F":    {Price: 39400, Change: -50, ChangePct: -0.13, Series: []float64{3, 2, 1}},
 		"USDJPY=X": {Price: 145.12, Change: 0.3, ChangePct: 0.2, Series: []float64{1, 1, 2}},
 	}
 	out := RenderDashboard(data, []string{"japan"}, Options{NoColor: true, TermWidth: 60})
-	if !strings.Contains(out, "Clock") {
-		t.Errorf("clock tile should be present when last row has empty cell:\n%s", out)
-	}
-}
-
-// TestClockTileAbsent は最終行が埋まっているとき時計タイルが描かれないことを検証する。
-// japan は5銘柄。幅150 → cols=min(5,6)=5 → 1段5銘柄で空きなし → 時計なし。
-func TestClockTileAbsent(t *testing.T) {
-	data := map[string]*fetcher.Result{
-		"^N225":    {Price: 39500.5, Change: 100, ChangePct: 0.25, Series: []float64{1, 2, 3}},
-		"NKD=F":    {Price: 39400, Change: -50, ChangePct: -0.13, Series: []float64{3, 2, 1}},
-		"USDJPY=X": {Price: 145.12, Change: 0.3, ChangePct: 0.2, Series: []float64{1, 1, 2}},
-	}
-	out := RenderDashboard(data, []string{"japan"}, Options{NoColor: true, TermWidth: 150})
 	if strings.Contains(out, "Clock") {
-		t.Errorf("clock tile should be absent when last row is full:\n%s", out)
-	}
-}
-
-// TestClockTileDimensions は時計タイルの行数・幅が通常タイルと一致することを検証する。
-func TestClockTileDimensions(t *testing.T) {
-	lines := renderClockTile(40, 3, false, false, nil, "en")
-	if len(lines) != 3+tileChrome {
-		t.Errorf("clock tile lines = %d, want %d", len(lines), 3+tileChrome)
-	}
-	for i, ln := range lines {
-		if w := stringWidth(ln); w != 40 {
-			t.Errorf("clock tile line %d width = %d, want 40: %q", i, w, ln)
-		}
-	}
-	if !strings.Contains(lines[0], "Clock") {
-		t.Errorf("clock tile title missing: %q", lines[0])
-	}
-}
-
-// TestClockTileNoColorCompat は --no-color 時に時計タイルが ANSI エスケープを含まないことを検証する。
-func TestClockTileNoColorCompat(t *testing.T) {
-	lines := renderClockTile(40, 3, false, true, nil, "en")
-	for _, ln := range lines {
-		if strings.Contains(ln, "\033[") {
-			t.Errorf("no-color clock tile must not contain ANSI escapes: %q", ln)
-		}
+		t.Errorf("clock tile must not be rendered:\n%s", out)
 	}
 }
 

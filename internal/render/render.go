@@ -1146,81 +1146,6 @@ func maxInt(a, b int) int {
 	return b
 }
 
-// renderClockTile は時計タイルを描く。タイトル「Clock」、中央に日付(例 6/13(Fri))と
-// 時刻(例 00:29)を2行・太字白で中央寄せ。全行数は renderTile と同じ chartN + tileChrome。
-func renderClockTile(outerW, chartN int, useColor, ascii bool, loc *time.Location, lang string) []string {
-	if outerW < minTileW {
-		outerW = minTileW
-	}
-	if chartN < 1 {
-		chartN = 1
-	}
-	innerW := outerW - 2
-	contentW := innerW - 2
-
-	bc := getBoxChars(ascii)
-	border := brightBlk
-	wclr := boldWhite
-	rst := reset
-	if !useColor {
-		border, wclr, rst = "", "", ""
-	}
-
-	now := time.Now().In(locOf(loc))
-	weekdays := []string{
-		i18n.T(lang, "weekday_sun"),
-		i18n.T(lang, "weekday_mon"),
-		i18n.T(lang, "weekday_tue"),
-		i18n.T(lang, "weekday_wed"),
-		i18n.T(lang, "weekday_thu"),
-		i18n.T(lang, "weekday_fri"),
-		i18n.T(lang, "weekday_sat"),
-	}
-	dateStr := fmt.Sprintf("%d/%d(%s)", int(now.Month()), now.Day(), weekdays[int(now.Weekday())])
-	timeStr := now.Format("15:04")
-
-	clockTitle := i18n.T(lang, "clock")
-	top := buildTopBorderW(bc, border, rst, clockTitle, stringWidth(clockTitle), "", innerW)
-	bottom := border + bc.bl + strings.Repeat(bc.h, innerW) + bc.br + rst
-	left := border + bc.v + rst
-	right := border + bc.v + rst
-	wrap := func(inner string) string { return left + " " + inner + " " + right }
-
-	// 内側行数 = chartN + 2(バッジ行枠 + チャート行 + 値行枠 相当)。
-	innerRows := chartN + 2
-	center := func(s string) string {
-		sw := stringWidth(s)
-		if sw >= contentW {
-			return truncWidth(s, contentW)
-		}
-		padL := (contentW - sw) / 2
-		padR := contentW - sw - padL
-		return strings.Repeat(" ", padL) + wclr + s + rst + strings.Repeat(" ", padR)
-	}
-	blank := wrap(padRight("", contentW))
-
-	lines := make([]string, 0, chartN+tileChrome)
-	lines = append(lines, top)
-	// 日付・時刻を内側の中央2行に配置
-	dateRow := innerRows/2 - 1
-	timeRow := innerRows / 2
-	if dateRow < 0 {
-		dateRow = 0
-	}
-	for r := 0; r < innerRows; r++ {
-		switch r {
-		case dateRow:
-			lines = append(lines, wrap(center(dateStr)))
-		case timeRow:
-			lines = append(lines, wrap(center(timeStr)))
-		default:
-			lines = append(lines, blank)
-		}
-	}
-	lines = append(lines, bottom)
-	return lines
-}
-
 // buildBadge は前日比% バッジ ' ▲+0.06% ' を生成する。
 // 騰落色の背景 + 太字白文字。下落=赤背景、変わらず=bright black 背景。
 // redGreen で背景色を反転。useColor=false なら従来の色なしテキスト。
@@ -1460,13 +1385,7 @@ func RenderDashboard(data map[string]*fetcher.Result, sections []string, opt Opt
 			w := colWidths[ci]
 			tiles = append(tiles, renderTileL(fi.item, data[fi.item.Symbol], w, chartN, useColor, opt.RedGreen, ascii, truecolor, fi.secName, opt.Lang, th))
 		}
-		// 最終行に空きセルがあれば、先頭の空き1セルに時計タイルを描く。
-		lastRow := end >= len(flat)
-		if lastRow && len(rowItems) < cols {
-			clockCol := len(rowItems) // 先頭の空きセルの列インデックス
-			w := colWidths[clockCol]
-			tiles = append(tiles, renderClockTile(w, chartN, useColor, ascii, loc, opt.Lang))
-		}
+		// 最終行に空きセルがあってもタイルは置かない(空きは空白のまま)。
 		// 行ごとに横連結(ギャップ0)
 		for li := 0; li < tileH; li++ {
 			var parts []string

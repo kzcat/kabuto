@@ -115,6 +115,16 @@ func TestQuit(t *testing.T) {
 	if act != ActionQuit {
 		t.Fatal("expected quit on Esc")
 	}
+	// Ctrl+C (ETX byte 0x03) must quit even though raw mode disables ISIG.
+	_, act = Dispatch(st, Key{R: 3}, 4, testSections)
+	if act != ActionQuit {
+		t.Fatal("expected quit on Ctrl+C")
+	}
+	// Ctrl+C must quit even while the help overlay is open.
+	_, act = Dispatch(UIState{ShowHelp: true}, Key{R: 3}, 4, testSections)
+	if act != ActionQuit {
+		t.Fatal("expected quit on Ctrl+C with help open")
+	}
 }
 
 func TestRefetch(t *testing.T) {
