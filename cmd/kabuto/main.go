@@ -194,9 +194,8 @@ func runWatch(sec int, collect func() []string, sections []string, opt render.Op
 		os.Exit(0)
 	}()
 
-	// capture SIGWINCH (terminal resize)
-	winCh := make(chan os.Signal, 1)
-	signal.Notify(winCh, syscall.SIGWINCH)
+	// capture terminal resize (SIGWINCH on Unix, no-op elsewhere)
+	winCh := watchResizeChan()
 
 	fmt.Fprint(out, enterAlt+hideCur)
 	defer restore()

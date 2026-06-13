@@ -1,0 +1,55 @@
+version: 2
+
+builds:
+  - main: ./cmd/kabuto
+    binary: kabuto
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+
+release:
+  github:
+    owner: kzcat
+    name: kabuto
+
+homebrew_casks:
+  - repository:
+      owner: kzcat
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    name: kabuto
+    homepage: https://github.com/kzcat/kabuto
+    description: "Global market dashboard for your terminal — indices, forex, crypto and commodities."
+    license: MIT
+
+scoops:
+  - repository:
+      owner: kzcat
+      name: scoop-bucket
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    name: kabuto
+    homepage: https://github.com/kzcat/kabuto
+    description: "Global market dashboard for your terminal — indices, forex, crypto and commodities."
+    license: MIT

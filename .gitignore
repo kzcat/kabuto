@@ -1,3 +1,4 @@
 /kabuto
 *.test
 dist/
+*.exe
