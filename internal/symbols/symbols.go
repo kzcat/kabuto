@@ -18,6 +18,27 @@ type Section struct {
 // SectionOrder はセクション表示順
 var SectionOrder = []string{"japan", "us", "us-futures", "europe", "asia", "mideast-america", "forex", "crypto", "commodity"}
 
+// RegisterSection registers or merges a section into Sections.
+// For existing keys, items are appended (duplicates by Symbol skipped).
+// For new keys, the section is added. SectionOrder is not modified.
+func RegisterSection(sec Section) {
+	if existing, ok := Sections[sec.Key]; ok {
+		seen := map[string]bool{}
+		for _, it := range existing.Items {
+			seen[it.Symbol] = true
+		}
+		for _, it := range sec.Items {
+			if !seen[it.Symbol] {
+				existing.Items = append(existing.Items, it)
+				seen[it.Symbol] = true
+			}
+		}
+		Sections[sec.Key] = existing
+	} else {
+		Sections[sec.Key] = sec
+	}
+}
+
 // Sections は全セクション定義
 var Sections = map[string]Section{
 	"japan": {Key: "japan", Title: "Japan", Items: []Item{

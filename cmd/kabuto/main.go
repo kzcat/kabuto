@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kzcat/kabuto/internal/config"
 	"github.com/kzcat/kabuto/internal/fetcher"
 	"github.com/kzcat/kabuto/internal/i18n"
 	"github.com/kzcat/kabuto/internal/locale"
@@ -45,6 +46,14 @@ func (s *sectionFlag) Set(v string) error {
 	return nil
 }
 
+type addFlag []string
+
+func (a *addFlag) String() string { return strings.Join(*a, ",") }
+func (a *addFlag) Set(v string) error {
+	*a = append(*a, v)
+	return nil
+}
+
 func usage() {
 	w := flag.CommandLine.Output()
 	fmt.Fprintf(w, "Usage: kabuto [options]\n\n")
@@ -62,11 +71,14 @@ func usage() {
 	fmt.Fprintf(w, "      --source auto|yahoo|stooq  Data source (default auto)\n")
 	fmt.Fprintf(w, "      --range 1d|5d|1mo|6mo|1y   History range (default 1d)\n")
 	fmt.Fprintf(w, "      --theme NAME     Color theme (default|mono|light|highcontrast)\n")
+	fmt.Fprintf(w, "      --add SYMBOL[:CC[:DEC]]  Add ad-hoc symbol to Watchlist (repeatable)\n")
+	fmt.Fprintf(w, "      --config PATH    Config file (default ~/.config/kabuto/config.json)\n")
 	fmt.Fprintf(w, "  -v, --version        Print version and exit\n")
 }
 
 func main() {
 	var sections sectionFlag
+	var addSpecs addFlag
 	var watchSec int
 	var jsonOut bool
 	var noColor bool
@@ -78,11 +90,13 @@ func main() {
 	var sourceFlag string
 	var rangeFlag string
 	var themeFlag string
+	var configPath string
 
 	flag.Usage = usage
 
 	flag.Var(&sections, "s", "Show only these sections (repeatable)")
 	flag.Var(&sections, "section", "Show only these sections (repeatable)")
+	flag.Var(&addSpecs, "add", "Add ad-hoc symbol to Watchlist (repeatable)")
 	flag.IntVar(&watchSec, "w", 0, "Auto-refresh interval in seconds")
 	flag.IntVar(&watchSec, "watch", 0, "Auto-refresh interval in seconds")
 	flag.BoolVar(&jsonOut, "j", false, "Output JSON")
@@ -97,11 +111,61 @@ func main() {
 	flag.StringVar(&sourceFlag, "source", "auto", "Data source (auto|yahoo|stooq)")
 	flag.StringVar(&rangeFlag, "range", "1d", "Time range (1d|5d|1mo|6mo|1y)")
 	flag.StringVar(&themeFlag, "theme", "default", "Color theme (default|mono|light|highcontrast)")
+	flag.StringVar(&configPath, "config", "", "Config file path")
 	flag.Parse()
 
 	if showVersion {
 		fmt.Printf("kabuto %s\n", version)
 		os.Exit(0)
+	}
+
+	// Load config
+	cfgPath := configPath
+	if cfgPath == "" {
+		cfgPath = config.DefaultPath()
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	// Priority: CLI flag > config > env > default
+	// Use flag.Visit to detect explicitly set flags
+	set := map[string]bool{}
+	flag.Visit(func(f *flag.Flag) { set[f.Name] = true })
+
+	if !set["lang"] && cfg.Lang != "" {
+		lang = cfg.Lang
+	}
+	if !set["country"] && cfg.Country != "" {
+		country = cfg.Country
+	}
+	if !set["theme"] && cfg.Theme != "" {
+		themeFlag = cfg.Theme
+	}
+	if !set["range"] && cfg.Range != "" {
+		rangeFlag = cfg.Range
+	}
+	if !set["source"] && cfg.Source != "" {
+		sourceFlag = cfg.Source
+	}
+
+	// Register custom sections from config
+	config.RegisterSections(cfg.Sections)
+
+	// Register --add items into "watch" section
+	if len(addSpecs) > 0 {
+		var items []symbols.Item
+		for _, spec := range addSpecs {
+			ic, err := config.ParseAddSpec(spec)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			items = append(items, ic.ToItem())
+		}
+		symbols.RegisterSection(symbols.Section{Key: "watch", Title: "Watchlist", Items: items})
 	}
 
 	if jsonOut {
@@ -129,6 +193,43 @@ func main() {
 	order := symbols.SectionOrder
 	if !explicit {
 		order = locale.HomeFirstOrder(cc)
+	}
+
+	// Apply config section_order if -s not given
+	if !explicit && len(cfg.SectionOrder) > 0 {
+		var newOrder []string
+		for _, k := range cfg.SectionOrder {
+			if _, ok := symbols.Sections[k]; ok {
+				newOrder = append(newOrder, k)
+			}
+		}
+		// Append remaining built-in sections not in config order
+		inOrder := map[string]bool{}
+		for _, k := range newOrder {
+			inOrder[k] = true
+		}
+		for _, k := range order {
+			if !inOrder[k] {
+				newOrder = append(newOrder, k)
+			}
+		}
+		order = newOrder
+	}
+
+	// If "watch" section exists and not in order, prepend it (non-explicit only)
+	if !explicit {
+		if _, ok := symbols.Sections["watch"]; ok {
+			hasWatch := false
+			for _, k := range order {
+				if k == "watch" {
+					hasWatch = true
+					break
+				}
+			}
+			if !hasWatch {
+				order = append([]string{"watch"}, order...)
+			}
+		}
 	}
 
 	// Determine display location: --tz > time.Local.
