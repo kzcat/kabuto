@@ -191,7 +191,7 @@ func TestClockTileAbsent(t *testing.T) {
 
 // TestClockTileDimensions は時計タイルの行数・幅が通常タイルと一致することを検証する。
 func TestClockTileDimensions(t *testing.T) {
-	lines := renderClockTile(40, 3, false, false, nil)
+	lines := renderClockTile(40, 3, false, false, nil, "en")
 	if len(lines) != 3+tileChrome {
 		t.Errorf("clock tile lines = %d, want %d", len(lines), 3+tileChrome)
 	}
@@ -207,7 +207,7 @@ func TestClockTileDimensions(t *testing.T) {
 
 // TestClockTileNoColorCompat は --no-color 時に時計タイルが ANSI エスケープを含まないことを検証する。
 func TestClockTileNoColorCompat(t *testing.T) {
-	lines := renderClockTile(40, 3, false, true, nil)
+	lines := renderClockTile(40, 3, false, true, nil, "en")
 	for _, ln := range lines {
 		if strings.Contains(ln, "\033[") {
 			t.Errorf("no-color clock tile must not contain ANSI escapes: %q", ln)

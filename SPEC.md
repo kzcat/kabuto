@@ -223,3 +223,22 @@ sekaino-kabuka/
 - `go vet ./...` クリーン / `go test ./...` 全パス(ネットワーク不要)
 - `go build -o kabuto ./cmd/kabuto` で単一バイナリ
 - 旧 `sekai-kabuka` の文字列・ディレクトリ・module path が残っていないこと(`grep -rn sekai-kabuka` がヒットしない。README の沿革説明を除く)
+
+### 5. 多言語対応 (i18n)
+
+収録言語: **en, ja, zh(簡体), ko, de, fr, es** の7言語。**en をベース/フォールバック**とする。
+
+- **新規パッケージ `internal/i18n`**:
+  - 言語検出: `$LC_ALL` → `$LANG` → `$LANGUAGE` の順に読み、先頭の言語サブタグを抽出(`ja_JP.UTF-8`→`ja`、`zh_CN`→`zh`、`zh_Hans`→`zh`)。収録外/未取得は `en`
+  - `--lang <code>` フラグで上書き(優先順位: フラグ > 環境変数 > 既定 en)。**言語(ラベル)と国(並び順, --country)は独立**
+  - UI 文字列カタログ: `map[lang]map[key]string`。キーが無ければ en にフォールバック、en にも無ければキー名をそのまま返す
+  - 銘柄名は **Yahoo シンボルをキー**に、セクション名は **Section.Key をキー**に、それぞれ言語別訳を引く(どちらも en フォールバック)
+- **symbols.go の変更**: `Item.Name` / `Section.Title` の基準値を**英語の国際標準名**にする(例: `Nikkei 225` `Dow Jones` `S&P 500` `NASDAQ` `Hang Seng` `Shanghai Composite` `TAIEX` `KOSPI` `Gold` `Crude Oil WTI` 等)。日本語名(日経平均 等)は i18n カタログの `ja` に移す
+- **翻訳方針**:
+  - セクション名(Japan/US/US Futures/Europe/Asia/Mid-East & Americas/Forex/Crypto/Commodities)・商品名(Gold/Crude Oil WTI/Silver/Natural Gas)・記述的語(futures, 10Y yield 等)は各言語へ自然に翻訳する
+  - 指数の固有名詞(NASDAQ, DAX, CAC 40, FTSE 100, S&P 500 等)は各言語の慣習に従い、ラテン文字のままでよい言語はそのまま(例: 独仏西では DAX/NASDAQ はそのまま、CJK では現地慣習名: 日「ナスダック/日経平均」、中「纳斯达克/日经平均」、韓「나스닥/닛케이」等)
+  - **データラベル(セクション名・銘柄名・商品名)・ヘッダー語(global markets)・時計タイトル/曜日・キーオーバーレイのラベル**は7言語すべて翻訳必須
+  - `--help` のフラグ詳細説明は en/ja を整備し、他言語は en フォールバック可(プロローグ翻訳の負荷を抑えるため。スコープ外の手抜きではなく明示的な許容)
+- **render / JSON**: 表示名は解決後の言語名を使う。`--json` の `name` も `--lang` で解決した名前にする(`symbol` キーは不変なので機械可読性は保たれる)
+- **回帰防止**: 既存機能(描画・キー操作・ロケール並べ替え・配布)を壊さない。`go vet`/`go test` が通り続けること
+- **テスト**: 言語検出(各種 LANG 値→lang)、`--lang` 優先順位、カタログのフォールバック(未収録キー→en→キー名)、シンボル/セクション名解決を純粋関数でテスト(ネットワーク不要)

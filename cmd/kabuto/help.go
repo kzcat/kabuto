@@ -1,38 +1,46 @@
 package main
 
-import "strings"
+import (
+	"strings"
 
-var helpLines = []string{
-	"q / Esc    Quit",
-	"r          Refetch",
-	"c          Color mode (normal/JP/none)",
-	"+ / -      Columns +1 / -1",
-	"=          Auto columns",
-	"1-9        Show section (toggle)",
-	"0 / a      All sections",
-	"f          Full height toggle",
-	"Space      Pause / resume",
-	"? / h      This help",
-	"",
-	"Press any key to close",
+	"github.com/kzcat/kabuto/internal/i18n"
+)
+
+func buildHelpLines(lang string) []string {
+	return []string{
+		"q / Esc    " + i18n.T(lang, "key_quit"),
+		"r          " + i18n.T(lang, "key_refetch"),
+		"c          " + i18n.T(lang, "key_color"),
+		"+ / -      " + i18n.T(lang, "key_columns"),
+		"=          " + i18n.T(lang, "key_auto_cols"),
+		"1-9        " + i18n.T(lang, "key_section"),
+		"0 / a      " + i18n.T(lang, "key_all"),
+		"f          " + i18n.T(lang, "key_fullheight"),
+		"Space      " + i18n.T(lang, "key_pause"),
+		"? / h      " + i18n.T(lang, "key_help"),
+		"",
+		i18n.T(lang, "key_close"),
+	}
 }
 
 // overlayHelp renders a centered help box over the frame.
-func overlayHelp(frame string, termWidth, termRows int) string {
+func overlayHelp(frame string, termWidth, termRows int, lang string) string {
+	lines := buildHelpLines(lang)
 	// Determine box dimensions
 	maxW := 0
-	for _, l := range helpLines {
-		if len(l) > maxW {
-			maxW = len(l)
+	for _, l := range lines {
+		w := len(l)
+		if w > maxW {
+			maxW = w
 		}
 	}
 	boxW := maxW + 4 // 2 border + 2 padding
-	boxH := len(helpLines) + 2
+	boxH := len(lines) + 2
 
 	// Build box lines
 	box := make([]string, boxH)
 	box[0] = "┌" + strings.Repeat("─", boxW-2) + "┐"
-	for i, l := range helpLines {
+	for i, l := range lines {
 		pad := boxW - 4 - len(l)
 		if pad < 0 {
 			pad = 0
@@ -42,10 +50,10 @@ func overlayHelp(frame string, termWidth, termRows int) string {
 	box[boxH-1] = "└" + strings.Repeat("─", boxW-2) + "┘"
 
 	// Overlay onto frame lines
-	lines := strings.Split(frame, "\n")
+	frameLines := strings.Split(frame, "\n")
 	// Ensure we have at least termRows lines
-	for len(lines) < termRows {
-		lines = append(lines, "")
+	for len(frameLines) < termRows {
+		frameLines = append(frameLines, "")
 	}
 
 	startRow := (termRows - boxH) / 2
@@ -59,10 +67,10 @@ func overlayHelp(frame string, termWidth, termRows int) string {
 
 	for i, bline := range box {
 		row := startRow + i
-		if row >= len(lines) {
+		if row >= len(frameLines) {
 			break
 		}
-		orig := lines[row]
+		orig := frameLines[row]
 		// Ensure orig is wide enough
 		for len(orig) < termWidth {
 			orig += " "
@@ -77,7 +85,7 @@ func overlayHelp(frame string, termWidth, termRows int) string {
 		if end < len(orig) {
 			post = orig[end:]
 		}
-		lines[row] = pre + bline + post
+		frameLines[row] = pre + bline + post
 	}
-	return strings.Join(lines, "\n")
+	return strings.Join(frameLines, "\n")
 }

@@ -481,7 +481,7 @@ func TestRenderDashboardNA(t *testing.T) {
 	if !strings.Contains(out, "N/A") {
 		t.Error("expected N/A in output")
 	}
-	if !strings.Contains(out, "日本") {
+	if !strings.Contains(out, "Japan") {
 		t.Error("expected section name embedded in tile border")
 	}
 	// 非カラーは ANSI エスケープを含まない
@@ -599,7 +599,7 @@ func TestRenderJSON(t *testing.T) {
 		"NKD=F":    nil,
 		"USDJPY=X": nil,
 	}
-	out := RenderJSON(data, []string{"japan"}, nil)
+	out := RenderJSON(data, []string{"japan"}, nil, "en")
 	if !strings.Contains(out, `"price": 39500.5`) {
 		t.Errorf("unexpected JSON:\n%s", out)
 	}
@@ -792,7 +792,7 @@ func TestRenderJSONFields(t *testing.T) {
 	data := map[string]*fetcher.Result{
 		"^N225": {Price: 39500.5, PrevClose: 39000.0, Change: 500.5, ChangePct: 1.28, Time: "15:00", Epoch: 1718100000, Series: []float64{39100, 39300, 39500.5}},
 	}
-	out := RenderJSON(data, []string{"japan"}, nil)
+	out := RenderJSON(data, []string{"japan"}, nil, "en")
 
 	var parsed map[string]JSONSection
 	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
@@ -826,7 +826,7 @@ func TestRenderJSONFields(t *testing.T) {
 // TestRenderJSONNA は取得不能(nil)時でも country が出力され epoch/price が null になることを検証する。
 func TestRenderJSONNA(t *testing.T) {
 	data := map[string]*fetcher.Result{"^N225": nil}
-	out := RenderJSON(data, []string{"japan"}, nil)
+	out := RenderJSON(data, []string{"japan"}, nil, "en")
 
 	var parsed map[string]JSONSection
 	if err := json.Unmarshal([]byte(out), &parsed); err != nil {

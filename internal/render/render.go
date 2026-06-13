@@ -10,6 +10,7 @@ import (
 	"unicode"
 
 	"github.com/kzcat/kabuto/internal/fetcher"
+	"github.com/kzcat/kabuto/internal/i18n"
 	"github.com/kzcat/kabuto/internal/symbols"
 )
 
@@ -41,6 +42,7 @@ type Options struct {
 	ForceCols   int            // 手動列数指定(0=自動)
 	Loc         *time.Location // 表示用タイムゾーン(nil なら time.Local)
 	CryptoItems []symbols.Item // crypto セクションの並び替え済みアイテム(nil なら symbols 定義順)
+	Lang        string         // UI言語(空なら en)
 }
 
 // locOf は opt の Loc を返す。nil なら time.Local。
@@ -1084,7 +1086,7 @@ func maxInt(a, b int) int {
 
 // renderClockTile は時計タイルを描く。タイトル「Clock」、中央に日付(例 6/13(Fri))と
 // 時刻(例 00:29)を2行・太字白で中央寄せ。全行数は renderTile と同じ chartN + tileChrome。
-func renderClockTile(outerW, chartN int, useColor, ascii bool, loc *time.Location) []string {
+func renderClockTile(outerW, chartN int, useColor, ascii bool, loc *time.Location, lang string) []string {
 	if outerW < minTileW {
 		outerW = minTileW
 	}
@@ -1103,11 +1105,20 @@ func renderClockTile(outerW, chartN int, useColor, ascii bool, loc *time.Locatio
 	}
 
 	now := time.Now().In(locOf(loc))
-	weekdays := []string{"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"}
+	weekdays := []string{
+		i18n.T(lang, "weekday_sun"),
+		i18n.T(lang, "weekday_mon"),
+		i18n.T(lang, "weekday_tue"),
+		i18n.T(lang, "weekday_wed"),
+		i18n.T(lang, "weekday_thu"),
+		i18n.T(lang, "weekday_fri"),
+		i18n.T(lang, "weekday_sat"),
+	}
 	dateStr := fmt.Sprintf("%d/%d(%s)", int(now.Month()), now.Day(), weekdays[int(now.Weekday())])
 	timeStr := now.Format("15:04")
 
-	top := buildTopBorderW(bc, border, rst, "Clock", stringWidth("Clock"), "", innerW)
+	clockTitle := i18n.T(lang, "clock")
+	top := buildTopBorderW(bc, border, rst, clockTitle, stringWidth(clockTitle), "", innerW)
 	bottom := border + bc.bl + strings.Repeat(bc.h, innerW) + bc.br + rst
 	left := border + bc.v + rst
 	right := border + bc.v + rst
@@ -1272,8 +1283,11 @@ func RenderDashboard(data map[string]*fetcher.Result, sections []string, opt Opt
 		if secKey == "crypto" && opt.CryptoItems != nil {
 			items = opt.CryptoItems
 		}
+		secTitle := i18n.SectionTitle(opt.Lang, secKey)
 		for _, it := range items {
-			flat = append(flat, flatItem{item: it, secName: sec.Title})
+			fi := it
+			fi.Name = i18n.SymbolName(opt.Lang, it.Symbol, it.Name)
+			flat = append(flat, flatItem{item: fi, secName: secTitle})
 		}
 	}
 
@@ -1321,9 +1335,9 @@ func RenderDashboard(data map[string]*fetcher.Result, sections []string, opt Opt
 
 	var lines []string
 	now := time.Now().In(loc).Format("2006-01-02 15:04:05 -07:00")
-	header := "kabuto ─ global markets    Updated: " + now
+	header := "kabuto ─ " + i18n.T(opt.Lang, "global_markets") + "    Updated: " + now
 	if ascii {
-		header = "kabuto - global markets    Updated: " + now
+		header = "kabuto - " + i18n.T(opt.Lang, "global_markets") + "    Updated: " + now
 	}
 	if useColor {
 		// 端末幅まで反転を伸ばす
@@ -1364,7 +1378,7 @@ func RenderDashboard(data map[string]*fetcher.Result, sections []string, opt Opt
 		if lastRow && len(rowItems) < cols {
 			clockCol := len(rowItems) // 先頭の空きセルの列インデックス
 			w := colWidths[clockCol]
-			tiles = append(tiles, renderClockTile(w, chartN, useColor, ascii, loc))
+			tiles = append(tiles, renderClockTile(w, chartN, useColor, ascii, loc, opt.Lang))
 		}
 		// 行ごとに横連結(ギャップ0)
 		for li := 0; li < tileH; li++ {
@@ -1399,7 +1413,7 @@ type JSONSection struct {
 }
 
 // RenderJSON はJSON出力文字列を生成。時刻は loc(nil なら time.Local)準拠で整形する。
-func RenderJSON(data map[string]*fetcher.Result, sections []string, loc *time.Location) string {
+func RenderJSON(data map[string]*fetcher.Result, sections []string, loc *time.Location, lang string) string {
 	l := locOf(loc)
 	keys := sections
 	if len(keys) == 0 {
@@ -1410,9 +1424,10 @@ func RenderJSON(data map[string]*fetcher.Result, sections []string, loc *time.Lo
 		sec := symbols.Sections[secKey]
 		var items []JSONItem
 		for _, item := range sec.Items {
+			localName := i18n.SymbolName(lang, item.Symbol, item.Name)
 			r := data[item.Symbol]
 			if r == nil {
-				items = append(items, JSONItem{Name: item.Name, Symbol: item.Symbol, Country: item.Country})
+				items = append(items, JSONItem{Name: localName, Symbol: item.Symbol, Country: item.Country})
 			} else {
 				price := roundTo(r.Price, item.Decimals)
 				change := roundTo(r.Change, item.Decimals)
@@ -1428,7 +1443,7 @@ func RenderJSON(data map[string]*fetcher.Result, sections []string, loc *time.Lo
 					series[i] = roundTo(v, item.Decimals)
 				}
 				items = append(items, JSONItem{
-					Name:      item.Name,
+					Name:      localName,
 					Symbol:    item.Symbol,
 					Country:   item.Country,
 					Price:     &price,
@@ -1440,7 +1455,7 @@ func RenderJSON(data map[string]*fetcher.Result, sections []string, loc *time.Lo
 				})
 			}
 		}
-		output[secKey] = JSONSection{Title: sec.Title, Items: items}
+		output[secKey] = JSONSection{Title: i18n.SectionTitle(lang, secKey), Items: items}
 	}
 	b, _ := json.MarshalIndent(output, "", "  ")
 	return string(b)

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/kzcat/kabuto/internal/fetcher"
+	"github.com/kzcat/kabuto/internal/i18n"
 	"github.com/kzcat/kabuto/internal/locale"
 	"github.com/kzcat/kabuto/internal/render"
 	"github.com/kzcat/kabuto/internal/symbols"
@@ -57,6 +58,7 @@ func usage() {
 	fmt.Fprintf(w, "      --no-color       Disable colors and use ASCII box drawing\n")
 	fmt.Fprintf(w, "      --tz NAME        Display times in the given IANA timezone (e.g. Asia/Tokyo)\n")
 	fmt.Fprintf(w, "      --country ISO2   Override detected home market country (e.g. JP, US, DE)\n")
+	fmt.Fprintf(w, "      --lang CODE      UI language (en, ja, zh, ko, de, fr, es; default from $LANG)\n")
 	fmt.Fprintf(w, "  -v, --version        Print version and exit\n")
 }
 
@@ -69,6 +71,7 @@ func main() {
 	var showVersion bool
 	var tz string
 	var country string
+	var lang string
 
 	flag.Usage = usage
 
@@ -82,6 +85,7 @@ func main() {
 	flag.BoolVar(&redGreen, "rg", false, "Use red=up / green=down (Japanese convention)")
 	flag.StringVar(&tz, "tz", "", "Display timezone (IANA name)")
 	flag.StringVar(&country, "country", "", "Override home market country (ISO2)")
+	flag.StringVar(&lang, "lang", "", "UI language (en, ja, zh, ko, de, fr, es)")
 	flag.BoolVar(&showVersion, "v", false, "Print version")
 	flag.BoolVar(&showVersion, "version", false, "Print version")
 	flag.Parse()
@@ -103,6 +107,9 @@ func main() {
 
 	// Determine home market country: flag > env > default US.
 	cc := locale.ResolveCountry(country)
+
+	// Resolve UI language: flag > env > en.
+	resolvedLang := i18n.ResolveLang(lang)
 
 	// Home-market-first ordering applies only when -s is not given.
 	explicit := len(sections) > 0
@@ -147,7 +154,7 @@ func main() {
 		renderSections = order
 	}
 
-	opt := render.Options{NoColor: noColor, RedGreen: redGreen, Loc: loc, CryptoItems: cryptoItems}
+	opt := render.Options{NoColor: noColor, RedGreen: redGreen, Loc: loc, CryptoItems: cryptoItems, Lang: resolvedLang}
 
 	if watchSec > 0 && !jsonOut {
 		runWatch(watchSec, collectSymbols, renderSections, opt)
@@ -155,7 +162,7 @@ func main() {
 		syms := collectSymbols()
 		data := fetcher.FetchAll(syms)
 		if jsonOut {
-			fmt.Println(render.RenderJSON(data, renderSections, loc))
+			fmt.Println(render.RenderJSON(data, renderSections, loc, resolvedLang))
 		} else {
 			// single one-shot render. If stdout is a TTY, fill the height.
 			o := opt
@@ -251,7 +258,7 @@ func runWatch(sec int, collect func() []string, sections []string, opt render.Op
 		uiState.MaxCols = len(flatItems(drawSections, opt))
 
 		if uiState.ShowHelp {
-			content = overlayHelp(content, cols, rows)
+			content = overlayHelp(content, cols, rows, opt.Lang)
 		}
 		render1(content)
 	}
