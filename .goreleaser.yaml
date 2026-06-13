@@ -53,3 +53,31 @@ scoops:
     homepage: https://github.com/kzcat/kabuto
     description: "Global market dashboard for your terminal — indices, forex, crypto and commodities."
     license: MIT
+
+aurs:
+  - name: kabuto-bin
+    homepage: https://github.com/kzcat/kabuto
+    description: "Global market dashboard for your terminal — indices, forex, crypto and commodities."
+    license: MIT
+    maintainers:
+      - "kzcat <kazuto.okada@gmail.com>"
+    provides:
+      - kabuto
+    conflicts:
+      - kabuto
+    private_key: "{{ .Env.AUR_KEY }}"
+    git_url: ssh://aur@aur.archlinux.org/kabuto-bin.git
+
+winget:
+  - name: kabuto
+    publisher: kzcat
+    publisher_url: https://github.com/kzcat
+    short_description: "Global market dashboard for your terminal — indices, forex, crypto and commodities."
+    license: MIT
+    license_url: https://github.com/kzcat/kabuto/blob/main/LICENSE
+    copyright: "Copyright (c) kzcat"
+    homepage: https://github.com/kzcat/kabuto
+    repository:
+      owner: kzcat
+      name: winget-pkgs
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"

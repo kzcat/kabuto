@@ -2,7 +2,9 @@
 
 A terminal dashboard for global markets — stock indices, futures, forex, crypto and commodities at a glance.
 
-![screenshot](docs/screenshot.png) <!-- placeholder -->
+![kabuto demo](demo/kabuto.gif)
+
+> Regenerate the GIF: `vhs demo/demo.tape`
 
 (Originally a CLI clone of sekai-kabuka.com.)
 
@@ -12,6 +14,31 @@ A terminal dashboard for global markets — stock indices, futures, forex, crypt
 
 ```bash
 brew install kzcat/tap/kabuto
+```
+
+### AUR (Arch Linux)
+
+```bash
+yay -S kabuto-bin
+```
+
+### Nix
+
+```bash
+nix run github:kzcat/kabuto
+```
+
+### winget (Windows)
+
+```powershell
+winget install kzcat.kabuto
+```
+
+### Scoop (Windows)
+
+```powershell
+scoop bucket add kzcat https://github.com/kzcat/scoop-bucket
+scoop install kabuto
 ```
 
 ### go install
@@ -25,17 +52,6 @@ go install github.com/kzcat/kabuto/cmd/kabuto@latest
 Download the latest binary for your platform from the
 [Releases](https://github.com/kzcat/kabuto/releases) page, extract it,
 and place it somewhere in your `$PATH`.
-
-### Scoop (Windows)
-
-```powershell
-scoop bucket add kzcat https://github.com/kzcat/scoop-bucket
-scoop install kabuto
-```
-
-### AUR / Nix
-
-Planned — contributions welcome.
 
 ## Usage
 
@@ -67,6 +83,21 @@ kabuto --tz America/New_York
 # Override the detected home market country
 kabuto --country JP
 
+# Add ad-hoc symbols to watchlist
+kabuto --add AAPL --add TSLA:USD:2
+
+# Use a specific data source
+kabuto --source stooq
+
+# Select history range
+kabuto --range 1mo
+
+# Use a color theme
+kabuto --theme mono
+
+# Custom config file
+kabuto --config ~/my-kabuto.json
+
 # Version
 kabuto -v
 ```
@@ -82,6 +113,11 @@ kabuto -v
 | `--no-color` | Disable colors, use ASCII box drawing |
 | `--tz NAME` | IANA timezone for displayed times |
 | `--country ISO2` | Override home market country (e.g. JP, US, DE) |
+| `--add SYMBOL[:CC[:DEC]]` | Add ad-hoc symbol to Watchlist (repeatable) |
+| `--config PATH` | Config file (default `~/.config/kabuto/config.json`) |
+| `--source auto\|yahoo\|stooq` | Data source (default `auto`) |
+| `--range 1d\|5d\|1mo\|6mo\|1y` | History range (default `1d`) |
+| `--theme NAME` | Color theme (`default`\|`mono`\|`light`\|`highcontrast`) |
 | `-v, --version` | Print version and exit |
 
 The home market section is auto-detected from `$LC_ALL` / `$LANG`
