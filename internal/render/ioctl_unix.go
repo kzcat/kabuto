@@ -9,7 +9,7 @@ import (
 	"syscall"
 )
 
-// ioctlSize は TIOCGWINSZ で端末の桁数・行数を取得する。取得不可なら 0,0。
+// ioctlSize retrieves terminal columns and rows via TIOCGWINSZ. Returns 0,0 on failure.
 func ioctlSize() (cols, rows int) {
 	type winsize struct {
 		Row    uint16
@@ -31,7 +31,7 @@ func ioctlSize() (cols, rows int) {
 	return int(ws.Col), int(ws.Row)
 }
 
-// ioctlWidth は端末の桁数を返す(後方互換)。
+// ioctlWidth returns the terminal column count (for backward compatibility).
 func ioctlWidth() int {
 	c, _ := ioctlSize()
 	return c

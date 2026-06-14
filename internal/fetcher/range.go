@@ -4,7 +4,7 @@ package fetcher
 type Range int
 
 const (
-	Range1D  Range = iota
+	Range1D Range = iota
 	Range5D
 	Range1Mo
 	Range6Mo

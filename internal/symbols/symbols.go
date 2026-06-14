@@ -1,21 +1,21 @@
 package symbols
 
-// Item は1銘柄の定義
+// Item defines a single market symbol.
 type Item struct {
 	Name     string
 	Symbol   string
 	Decimals int
-	Country  string // ISO国コード(JP/US/...)。暗号資産など省略時は空文字
+	Country  string // ISO country code (JP/US/...). Empty for crypto, etc.
 }
 
-// Section はセクション定義
+// Section defines a market section.
 type Section struct {
 	Key   string
 	Title string
 	Items []Item
 }
 
-// SectionOrder はセクション表示順
+// SectionOrder defines the display order of sections.
 var SectionOrder = []string{"japan", "us", "us-futures", "europe", "asia", "mideast-america", "forex", "crypto", "commodity"}
 
 // RegisterSection registers or merges a section into Sections.
@@ -39,7 +39,7 @@ func RegisterSection(sec Section) {
 	}
 }
 
-// Sections は全セクション定義
+// Sections holds all section definitions.
 var Sections = map[string]Section{
 	"japan": {Key: "japan", Title: "Japan", Items: []Item{
 		{"Nikkei 225", "^N225", 2, "JP"},

@@ -2,12 +2,12 @@
 
 package render
 
-// ioctlSize は非Unix環境では未対応。0,0 を返す。
+// ioctlSize is unsupported on non-Unix platforms. Returns 0,0.
 func ioctlSize() (cols, rows int) {
 	return 0, 0
 }
 
-// ioctlWidth は非Unix環境では未対応。0 を返す。
+// ioctlWidth is unsupported on non-Unix platforms. Returns 0.
 func ioctlWidth() int {
 	return 0
 }

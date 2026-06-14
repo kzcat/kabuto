@@ -20,19 +20,19 @@ var baseURLs = []string{
 	"https://query1.finance.yahoo.com/v8/finance/chart/%s?interval=5m&range=1d",
 }
 
-// Result は1銘柄の取得結果
+// Result holds the fetch result for a single symbol.
 type Result struct {
 	Price     float64
 	PrevClose float64
 	Change    float64
 	ChangePct float64
 	Time      string
-	Epoch     int64     // regularMarketTime の epoch 秒
-	Series    []float64 // intraday の終値系列(null は前値で補間)
+	Epoch     int64     // regularMarketTime epoch seconds
+	Series    []float64 // intraday close series (nulls interpolated with previous value)
 	Currency  string    // meta.currency from Yahoo
 }
 
-// BaseURLOverride はテスト用にURLを差し替えるためのフック
+// BaseURLOverride is a hook to replace URLs for testing.
 var BaseURLOverride []string
 
 func getBaseURLs() []string {
@@ -60,7 +60,7 @@ type chartResponse struct {
 	} `json:"chart"`
 }
 
-// buildSeries は close 系列の null を前値で補間して []float64 にする
+// buildSeries interpolates nulls in the close series with the previous value, returning []float64.
 func buildSeries(raw []*float64, fallback float64) []float64 {
 	series := make([]float64, 0, len(raw))
 	prev := fallback
@@ -69,7 +69,7 @@ func buildSeries(raw []*float64, fallback float64) []float64 {
 			prev = *v
 			series = append(series, *v)
 		} else if len(series) > 0 || prev != 0 {
-			// null は前値で補間
+			// null: interpolate with previous value
 			series = append(series, prev)
 		}
 	}
@@ -125,7 +125,7 @@ func fetchOne(symbol string, client *http.Client) *Result {
 	return nil
 }
 
-// FetchAll は複数銘柄を並列取得する (Range-aware, Source-aware)
+// FetchAll fetches multiple symbols in parallel (Range-aware, Source-aware).
 func FetchAll(symbols []string, rng Range, sources ...Source) map[string]*Result {
 	client := &http.Client{Timeout: timeout}
 	results := make(map[string]*Result)

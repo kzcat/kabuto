@@ -16,7 +16,7 @@ const (
 type Action int
 
 const (
-	ActionNone    Action = iota
+	ActionNone Action = iota
 	ActionRedraw
 	ActionRefetch
 	ActionQuit

@@ -7,7 +7,7 @@ import (
 	"github.com/kzcat/kabuto/internal/symbols"
 )
 
-// TestSymbolCatalogCoverage は全51銘柄×7言語がカバーされていることを検証する。
+// TestSymbolCatalogCoverage verifies that all 51 symbols x 7 languages are covered.
 func TestSymbolCatalogCoverage(t *testing.T) {
 	// Collect all symbols from sections.
 	var allSyms []string
@@ -39,7 +39,7 @@ func TestSymbolCatalogCoverage(t *testing.T) {
 	}
 }
 
-// TestResolveLangPriority は --lang > env > en の優先順位を検証する。
+// TestResolveLangPriority verifies the priority order: --lang > env > en.
 func TestResolveLangPriority(t *testing.T) {
 	// Explicit flag overrides env.
 	if got := ResolveLang("ja"); got != "ja" {
@@ -61,7 +61,7 @@ func TestResolveLangPriority(t *testing.T) {
 	}
 }
 
-// TestFallbackChain はフォールバック挙動を検証する。
+// TestFallbackChain verifies the fallback behavior.
 func TestFallbackChain(t *testing.T) {
 	// Unknown key -> key itself.
 	if got := T("ja", "nope"); got != "nope" {

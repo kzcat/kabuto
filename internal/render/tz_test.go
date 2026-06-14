@@ -6,8 +6,8 @@ import (
 	"time"
 )
 
-// TestHeaderTimezoneOffset は Options.Loc に渡した location のオフセットがヘッダーに
-// コロン付き(例 +09:00)で併記され、"Updated:" を含むことを検証する(ネットワーク不要)。
+// TestHeaderTimezoneOffset verifies that the offset from Options.Loc is shown in the header
+// with colons (e.g. +09:00) alongside "Updated:" (no network required).
 func TestHeaderTimezoneOffset(t *testing.T) {
 	loc := time.FixedZone("X", 9*3600)
 	out := RenderDashboard(nil, []string{"japan"}, Options{NoColor: true, TermWidth: 80, Loc: loc})
@@ -23,7 +23,7 @@ func TestHeaderTimezoneOffset(t *testing.T) {
 	}
 }
 
-// TestHeaderNegativeOffset は負オフセットも -05:00 形式で出ることを検証する。
+// TestHeaderNegativeOffset verifies that negative offsets are displayed in -05:00 form.
 func TestHeaderNegativeOffset(t *testing.T) {
 	loc := time.FixedZone("Y", -5*3600)
 	out := RenderDashboard(nil, []string{"us"}, Options{NoColor: true, TermWidth: 80, Loc: loc})

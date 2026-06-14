@@ -70,7 +70,7 @@ func TestFetchOneSeries(t *testing.T) {
 	if r == nil {
 		t.Fatal("expected result")
 	}
-	// close は [39100, null, 39300, 39500.5] → null は前値 39100 で補間
+	// close is [39100, null, 39300, 39500.5] — null interpolated with prev value 39100
 	want := []float64{39100.0, 39100.0, 39300.0, 39500.5}
 	if len(r.Series) != len(want) {
 		t.Fatalf("series length: got %d, want %d (%v)", len(r.Series), len(want), r.Series)
@@ -85,7 +85,7 @@ func TestFetchOneSeries(t *testing.T) {
 func TestBuildSeriesInterpolation(t *testing.T) {
 	f := func(v float64) *float64 { return &v }
 	raw := []*float64{nil, f(10), nil, nil, f(20)}
-	// 先頭 null は fallback(100)で補間、以降は前値で補間
+	// leading null interpolated with fallback(100); subsequent nulls with prev value
 	got := buildSeries(raw, 100)
 	want := []float64{100, 10, 10, 10, 20}
 	if len(got) != len(want) {

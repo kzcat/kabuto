@@ -9,7 +9,7 @@ import (
 	"github.com/kzcat/kabuto/internal/symbols"
 )
 
-// TestTileLayoutOrder は新レイアウト(上=バッジ、中=チャート、下=現在値+前日比)を検証する。
+// TestTileLayoutOrder verifies the new layout (top=badge, middle=chart, bottom=price+change).
 func TestTileLayoutOrder(t *testing.T) {
 	r := &fetcher.Result{Price: 39500.50, PrevClose: 39000.0, Change: 500.50, ChangePct: 1.28, Series: []float64{39000, 39200, 39500.5}}
 	item := symbols.Item{Name: "日経平均", Symbol: "^N225", Decimals: 2, Country: "JP"}
@@ -31,7 +31,7 @@ func TestTileLayoutOrder(t *testing.T) {
 	}
 }
 
-// TestCountryCodeOnBorder は上枠線に国コード [JP] が銘柄名の前に入ることを検証する。
+// TestCountryCodeOnBorder verifies that the country code [JP] appears before the symbol name on the top border.
 func TestCountryCodeOnBorder(t *testing.T) {
 	item := symbols.Item{Name: "日経平均", Symbol: "^N225", Decimals: 2, Country: "JP"}
 	r := &fetcher.Result{Price: 100, Change: 1, ChangePct: 1, Series: []float64{1, 2, 3}}
@@ -48,7 +48,7 @@ func TestCountryCodeOnBorder(t *testing.T) {
 	}
 }
 
-// TestCountryCodeOmitted は Country が空のとき国コードが付かないことを検証する。
+// TestCountryCodeOmitted verifies that no country code is shown when Country is empty.
 func TestCountryCodeOmitted(t *testing.T) {
 	item := symbols.Item{Name: "BTCドル", Symbol: "BTC-USD", Decimals: 2, Country: ""}
 	r := &fetcher.Result{Price: 100, Change: 1, ChangePct: 1, Series: []float64{1, 2, 3}}
@@ -58,7 +58,7 @@ func TestCountryCodeOmitted(t *testing.T) {
 	}
 }
 
-// TestChartCellRowFor は基準線のセル行量子化を検証する(0=最上行)。
+// TestChartCellRowFor verifies baseline cell-row quantization (0=top row).
 func TestChartCellRowFor(t *testing.T) {
 	if got := chartCellRowFor(10, 0, 10, 4); got != 0 {
 		t.Errorf("max value cell row = %d, want 0 (top)", got)
@@ -71,7 +71,7 @@ func TestChartCellRowFor(t *testing.T) {
 	}
 }
 
-// TestBaselineRendered は前日終値の赤い基準線がチャート行に描かれることを検証する(useColor時)。
+// TestBaselineRendered verifies that the red baseline (prevClose) is drawn in chart rows (useColor).
 func TestBaselineRendered(t *testing.T) {
 	r := &fetcher.Result{Price: 105, PrevClose: 100, Change: 5, ChangePct: 5, Series: []float64{95, 100, 105}}
 	item := symbols.Item{Name: "X", Symbol: "X", Decimals: 2}
@@ -82,7 +82,7 @@ func TestBaselineRendered(t *testing.T) {
 	}
 }
 
-// TestGuidelinesWhenTall は N>=4 かつ +/-1% が範囲内のときガイドライン(bright black 点線)が描かれることを検証する。
+// TestGuidelinesWhenTall verifies that guidelines (bright black dotted) are drawn when N>=4 and +/-1% is in range.
 func TestGuidelinesWhenTall(t *testing.T) {
 	cc := chartColors{use: true, base: greenRGB, mono: green, reset: reset}
 	rows := buildChartLines([]float64{90, 100, 110}, 100, 20, 6, 0, 2, cc)
@@ -92,7 +92,7 @@ func TestGuidelinesWhenTall(t *testing.T) {
 	}
 }
 
-// TestNoGuidelinesWhenShort は N<4 のときガイドラインが描かれないことを検証する。
+// TestNoGuidelinesWhenShort verifies that guidelines are not drawn when N<4.
 func TestNoGuidelinesWhenShort(t *testing.T) {
 	cc := chartColors{use: true, base: greenRGB, mono: green, reset: reset}
 	rows := buildChartLines([]float64{90, 100, 110}, 100, 20, 3, 0, 2, cc)
@@ -102,7 +102,7 @@ func TestNoGuidelinesWhenShort(t *testing.T) {
 	}
 }
 
-// TestHighLowLabels はタイル幅>=30 のとき高値(右上)・安値(右下)ラベルが描かれることを検証する。
+// TestHighLowLabels verifies that high (top-right) and low (bottom-right) labels are drawn when tile width >= 30.
 func TestHighLowLabels(t *testing.T) {
 	r := &fetcher.Result{Price: 105, PrevClose: 100, Change: 5, ChangePct: 5, Series: []float64{95, 110, 90, 105}}
 	item := symbols.Item{Name: "X", Symbol: "X", Decimals: 2}
@@ -116,7 +116,7 @@ func TestHighLowLabels(t *testing.T) {
 	}
 }
 
-// TestNoLabelsNarrow はタイル幅<30 のとき高値・安値ラベルが付かないことを検証する。
+// TestNoLabelsNarrow verifies that high/low labels are omitted when tile width < 30.
 func TestNoLabelsNarrow(t *testing.T) {
 	r := &fetcher.Result{Price: 105, PrevClose: 100, Change: 5, ChangePct: 5, Series: []float64{95, 12345, 90, 105}}
 	item := symbols.Item{Name: "X", Symbol: "X", Decimals: 2}
@@ -127,7 +127,7 @@ func TestNoLabelsNarrow(t *testing.T) {
 	}
 }
 
-// TestIsClosed は閉場判定(epoch が30分以上古い)を検証する。
+// TestIsClosed verifies closed-market detection (epoch older than 30 minutes).
 func TestIsClosed(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	if !isClosed(now.Add(-31*time.Minute).Unix(), now) {
@@ -141,7 +141,7 @@ func TestIsClosed(t *testing.T) {
 	}
 }
 
-// TestClosedMarketGrey は閉場銘柄のチャートが bright black 単色で描かれ、赤基準線も grey になることを検証する。
+// TestClosedMarketGrey verifies that closed-market charts are drawn in bright black monochrome and the red baseline becomes grey.
 func TestClosedMarketGrey(t *testing.T) {
 	old := time.Now().Add(-2 * time.Hour).Unix()
 	r := &fetcher.Result{Price: 105, PrevClose: 100, Change: 5, ChangePct: 5, Epoch: old, Series: []float64{95, 100, 110}}
@@ -162,7 +162,7 @@ func TestClosedMarketGrey(t *testing.T) {
 	}
 }
 
-// TestNoClockTile は最終行に空きセルがあっても時計タイルを描かないことを検証する。
+// TestNoClockTile verifies that no clock tile is rendered even when the last row has empty cells.
 func TestNoClockTile(t *testing.T) {
 	data := map[string]*fetcher.Result{
 		"^N225":    {Price: 39500.5, Change: 100, ChangePct: 0.25, Series: []float64{1, 2, 3}},
@@ -175,7 +175,7 @@ func TestNoClockTile(t *testing.T) {
 	}
 }
 
-// TestNewLayoutNoColorCompat は新レイアウトでも --no-color 出力が ANSI エスケープを含まないことを検証する。
+// TestNewLayoutNoColorCompat verifies that --no-color output contains no ANSI escapes even with the new layout.
 func TestNewLayoutNoColorCompat(t *testing.T) {
 	r := &fetcher.Result{Price: 39500.5, PrevClose: 39000, Change: 500, ChangePct: 1.28, Series: []float64{39000, 39500.5}}
 	lines := renderTile(symbols.Item{Name: "日経平均", Symbol: "^N225", Decimals: 2, Country: "JP"}, r, 40, 4, false, false, true, false, "日本")

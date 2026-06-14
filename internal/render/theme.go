@@ -56,7 +56,7 @@ var lightTheme = Theme{
 
 var highcontrastTheme = Theme{
 	Name:      "highcontrast",
-	UpColor:   "\033[34;1m",   // bright blue (color-blind-friendly)
+	UpColor:   "\033[34;1m",     // bright blue (color-blind-friendly)
 	DownColor: "\033[38;5;208m", // orange (color-blind-friendly)
 	UpRGB:     [3]int{50, 100, 255},
 	DownRGB:   [3]int{255, 140, 0},
