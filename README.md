@@ -2,9 +2,9 @@
 
 A terminal dashboard for global markets — stock indices, futures, forex, crypto and commodities at a glance.
 
-![kabuto demo](demo/kabuto.gif)
+![kabuto screenshot](demo/screenshot.png)
 
-> Regenerate the GIF: `vhs demo/demo.tape`
+> Regenerate with [vhs](https://github.com/charmbracelet/vhs): `vhs demo/screenshot.tape` (still image) or `vhs demo/demo.tape` (GIF)
 
 (Originally a CLI clone of sekai-kabuka.com.)
 
