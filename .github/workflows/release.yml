@@ -23,7 +23,9 @@ jobs:
       - uses: goreleaser/goreleaser-action@v6
         with:
           version: latest
-          args: release --clean
+          # Skip the AUR pipe until an AUR_KEY secret is configured.
+          args: release --clean ${{ secrets.AUR_KEY == '' && '--skip=aur' || '' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+          AUR_KEY: ${{ secrets.AUR_KEY }}
