@@ -117,11 +117,21 @@ kabuto -v
 | `--config PATH` | Config file (default `~/.config/kabuto/config.json`) |
 | `--source auto\|yahoo\|stooq` | Data source (default `auto`) |
 | `--range 1d\|5d\|1mo\|6mo\|1y` | History range (default `1d`) |
-| `--theme NAME` | Color theme (`default`\|`mono`\|`light`\|`highcontrast`) |
+| `--theme NAME` | Color theme (`default`\|`mono`\|`light`\|`highcontrast`\|`dracula`\|`nord`\|`gruvbox`\|`solarized`) |
 | `-v, --version` | Print version and exit |
 
 The home market section is auto-detected from `$LC_ALL` / `$LANG`
 (falling back to US) and moved to the front.
+
+## Themes
+
+Built-in color themes set the up/down colors and the chart gradient.
+Pick one with `--theme <name>`:
+
+`default` · `mono` · `light` · `highcontrast` · `dracula` · `nord` · `gruvbox` · `solarized`
+
+`mono` and `highcontrast` are color-blind friendly; `--rg` (red=up) works on
+top of any theme.
 
 ## Interactive Keys (watch mode)
 
@@ -132,6 +142,9 @@ The home market section is auto-detected from `$LC_ALL` / `$LANG`
 | `c` | Cycle color mode | `f` | Toggle full-height |
 | `+` / `-` | Adjust columns | `?` / `h` | Help overlay |
 | `=` | Auto columns | `Space` | Pause/resume |
+| `n` / `Tab` | Select next item | `b` | Select previous item |
+| `Enter` | Detail view (toggle) | `p` | Layout preset cycle |
+| `Esc` | Back (detail → select → quit) | | |
 
 ## Sections
 

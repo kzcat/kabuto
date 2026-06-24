@@ -43,3 +43,20 @@ func Restore(fd int, st *State) error {
 	}
 	return nil
 }
+
+// SetReadTimeout switches the fd's raw mode to a polling read (VMIN=0,
+// VTIME=tenths*0.1s) so that Read returns after a short timeout even when no
+// byte is available. This lets the key reader distinguish a lone ESC keypress
+// from the start of an escape sequence (arrow keys). Unix only.
+func SetReadTimeout(fd int, tenths byte) error {
+	var t syscall.Termios
+	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), uintptr(ioctlGET), uintptr(unsafe.Pointer(&t))); errno != 0 {
+		return errno
+	}
+	t.Cc[syscall.VMIN] = 0
+	t.Cc[syscall.VTIME] = tenths
+	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), uintptr(ioctlSET), uintptr(unsafe.Pointer(&t))); errno != 0 {
+		return errno
+	}
+	return nil
+}

@@ -45,6 +45,64 @@ type Options struct {
 	Lang        string         // UI language (empty = en)
 	RangeLabel  string         // time-range label for display (e.g. "1d", "1mo")
 	Theme       Theme          // color theme
+	GraphSymbol string         // chart symbol mode: "auto"|"braille"|"block"|"tty" (empty = auto)
+	SelIndex    int            // selected grid item index (-1 = none)
+	DetailView  bool           // show detail view for selected item
+
+	// History holds an accumulated rolling price series per symbol (B7). When
+	// non-nil and an entry exists for a symbol, it replaces that result's
+	// intraday Series for chart rendering. nil = use API Series as-is.
+	History map[string][]float64
+}
+
+// applyHistory returns a data map whose results have their Series replaced by
+// the corresponding entry in hist (when present and non-empty). The originals
+// are never mutated: each substituted Result is shallow-copied. When hist is
+// nil/empty the input map is returned unchanged.
+func applyHistory(data map[string]*fetcher.Result, hist map[string][]float64) map[string]*fetcher.Result {
+	if len(hist) == 0 || len(data) == 0 {
+		return data
+	}
+	out := make(map[string]*fetcher.Result, len(data))
+	for sym, r := range data {
+		if r != nil {
+			if h, ok := hist[sym]; ok && len(h) > 0 {
+				cp := *r
+				cp.Series = h
+				out[sym] = &cp
+				continue
+			}
+		}
+		out[sym] = r
+	}
+	return out
+}
+
+// localeIsUTF8 reports whether the current locale env indicates a UTF-8 charset.
+// Used by graph-symbol "auto" resolution: non-UTF-8 locales fall back to "tty".
+func localeIsUTF8() bool {
+	for _, k := range []string{"LC_ALL", "LC_CTYPE", "LANG"} {
+		if v := os.Getenv(k); v != "" {
+			return strings.Contains(strings.ToUpper(v), "UTF-8") || strings.Contains(strings.ToUpper(v), "UTF8")
+		}
+	}
+	// No locale env set: assume modern UTF-8 terminal.
+	return true
+}
+
+// resolveGraphSymbol resolves the "auto" graph-symbol mode to a concrete mode.
+// auto -> "tty" when color is disabled (ascii fallback) or the locale is non-UTF-8;
+// otherwise "braille". Explicit modes are returned unchanged (unknown -> "braille").
+func resolveGraphSymbol(mode string, noColor, utf8 bool) string {
+	switch mode {
+	case "braille", "block", "tty":
+		return mode
+	default: // "auto" or empty/unknown
+		if noColor || !utf8 {
+			return "tty"
+		}
+		return "braille"
+	}
 }
 
 // locOf returns opt.Loc, defaulting to time.Local if nil.
@@ -244,6 +302,47 @@ func fmtPct(value float64) string {
 	return s
 }
 
+// fmtPctPlain formats a percentage without a sign (e.g. "1.28%").
+func fmtPctPlain(value float64) string {
+	return fmt.Sprintf("%.2f%%", math.Abs(value))
+}
+
+// meterBar renders a btop-style horizontal meter '█████░░░' representing the
+// magnitude of pct (clamped to +/-maxPct). The filled portion is colored by
+// gain/loss (depth-aware); the empty portion is bright black. width is the total
+// cell count. Returns "" when width<=0. useColor=false returns plain runes.
+func meterBar(pct float64, width int, th Theme, useColor, redGreen bool, depth int) string {
+	if width <= 0 {
+		return ""
+	}
+	const maxPct = 3.0 // +/-3% maps to a full bar
+	mag := math.Abs(pct) / maxPct
+	if mag > 1 {
+		mag = 1
+	}
+	filled := int(math.Round(mag * float64(width)))
+	if filled > width {
+		filled = width
+	}
+	if !useColor {
+		return strings.Repeat("█", filled) + strings.Repeat("░", width-filled)
+	}
+	base := baseRGBForTheme(pct, redGreen, th)
+	var fillClr string
+	if depth != 0 {
+		fillClr = fgDepth(base, depth)
+	} else {
+		fillClr = colorForTheme(pct, true, redGreen, th)
+	}
+	var b strings.Builder
+	b.WriteString(fillClr)
+	b.WriteString(strings.Repeat("█", filled))
+	b.WriteString(th.BrightBlk)
+	b.WriteString(strings.Repeat("░", width-filled))
+	b.WriteString(th.Reset)
+	return b.String()
+}
+
 // colorFor returns the ANSI color escape for the given change value (supports rg inversion).
 func colorFor(change float64, useColor, redGreen bool) string {
 	return colorForTheme(change, useColor, redGreen, defaultTheme)
@@ -280,6 +379,120 @@ func arrow(change float64) string {
 func truecolorSupported() bool {
 	ct := strings.ToLower(os.Getenv("COLORTERM"))
 	return ct == "truecolor" || ct == "24bit"
+}
+
+// Color depth levels.
+const (
+	depthTruecolor = 24 // 24-bit RGB
+	depth256       = 8  // 256-color (xterm)
+	depth16        = 4  // 16-color (basic ANSI)
+)
+
+// colorDepth detects the terminal color depth from environment:
+//
+//	truecolor (COLORTERM=truecolor|24bit) -> 256 (TERM contains "256") -> 16 (otherwise).
+func colorDepth() int {
+	if truecolorSupported() {
+		return depthTruecolor
+	}
+	if strings.Contains(os.Getenv("TERM"), "256") {
+		return depth256
+	}
+	return depth16
+}
+
+// rgbTo256 converts an RGB color to the nearest xterm-256 color index.
+// It picks the closer of the 6x6x6 color cube and the 24-step grayscale ramp.
+func rgbTo256(r, g, b int) int {
+	clamp := func(v int) int {
+		if v < 0 {
+			return 0
+		}
+		if v > 255 {
+			return 255
+		}
+		return v
+	}
+	r, g, b = clamp(r), clamp(g), clamp(b)
+
+	// 6x6x6 color cube. Cube level thresholds are 0,95,135,175,215,255.
+	cubeIdx := func(v int) int {
+		if v < 48 {
+			return 0
+		}
+		if v < 115 {
+			return 1
+		}
+		return (v - 35) / 40
+	}
+	cubeVal := func(i int) int {
+		if i == 0 {
+			return 0
+		}
+		return 55 + i*40
+	}
+	ri, gi, bi := cubeIdx(r), cubeIdx(g), cubeIdx(b)
+	cr, cg, cb := cubeVal(ri), cubeVal(gi), cubeVal(bi)
+	cubeDist := (cr-r)*(cr-r) + (cg-g)*(cg-g) + (cb-b)*(cb-b)
+	cubeColor := 16 + 36*ri + 6*gi + bi
+
+	// grayscale ramp 232..255 (values 8,18,...,238).
+	avg := (r + g + b) / 3
+	gi2 := (avg - 3) / 10
+	if gi2 < 0 {
+		gi2 = 0
+	}
+	if gi2 > 23 {
+		gi2 = 23
+	}
+	gv := 8 + gi2*10
+	grayDist := (gv-r)*(gv-r) + (gv-g)*(gv-g) + (gv-b)*(gv-b)
+	grayColor := 232 + gi2
+
+	if grayDist < cubeDist {
+		return grayColor
+	}
+	return cubeColor
+}
+
+// ansi16Palette is the standard 16-color ANSI palette (approximate RGB).
+var ansi16Palette = [16][3]int{
+	{0, 0, 0}, {170, 0, 0}, {0, 170, 0}, {170, 85, 0},
+	{0, 0, 170}, {170, 0, 170}, {0, 170, 170}, {170, 170, 170},
+	{85, 85, 85}, {255, 85, 85}, {85, 255, 85}, {255, 255, 85},
+	{85, 85, 255}, {255, 85, 255}, {85, 255, 255}, {255, 255, 255},
+}
+
+// rgbTo16 converts an RGB color to the nearest standard 16-color ANSI index (0..15).
+func rgbTo16(r, g, b int) int {
+	best, bestDist := 0, 1<<30
+	for i, c := range ansi16Palette {
+		d := (c[0]-r)*(c[0]-r) + (c[1]-g)*(c[1]-g) + (c[2]-b)*(c[2]-b)
+		if d < bestDist {
+			bestDist = d
+			best = i
+		}
+	}
+	return best
+}
+
+// fgDepth returns a foreground-color escape for the given RGB at the given color depth.
+// truecolor: ESC[38;2;r;g;bm (unchanged from fg24).
+// 256:       ESC[38;5;Nm with a 6x6x6/grayscale approximation.
+// 16:        ESC[3Nm / ESC[9Nm nearest-ANSI.
+func fgDepth(c [3]int, depth int) string {
+	switch depth {
+	case depth256:
+		return fmt.Sprintf("\033[38;5;%dm", rgbTo256(c[0], c[1], c[2]))
+	case depth16:
+		idx := rgbTo16(c[0], c[1], c[2])
+		if idx < 8 {
+			return fmt.Sprintf("\033[3%dm", idx)
+		}
+		return fmt.Sprintf("\033[9%dm", idx-8)
+	default: // depthTruecolor
+		return fg24(c)
+	}
 }
 
 // baseRGBFor returns the base RGB for the given change value (supports rg inversion).
@@ -491,6 +704,32 @@ type chartColors struct {
 	base      [3]int // gain/loss base RGB (truecolor gradient)
 	mono      string // single-color escape (non-truecolor)
 	reset     string
+	symbol    string // chart symbol mode: ""|"braille"|"block"|"tty" (empty = braille)
+	depth     int    // color depth (0 = legacy: truecolor field decides)
+}
+
+// gradFG returns the gradient foreground escape for the given chart row, honoring color depth.
+// With cc.depth==0 (legacy) it falls back to truecolor when cc.truecolor is set, else mono.
+func (cc chartColors) gradFG(row, rows int) string {
+	rgb := gradientRGB(cc.base, row, rows)
+	if cc.depth != 0 {
+		return fgDepth(rgb, cc.depth)
+	}
+	if cc.truecolor {
+		return fg24(rgb)
+	}
+	return cc.mono
+}
+
+// hasGradient reports whether colored gradient body cells should be used (vs mono).
+func (cc chartColors) hasGradient() bool {
+	if !cc.use || cc.closed {
+		return false
+	}
+	if cc.depth != 0 {
+		return true
+	}
+	return cc.truecolor
 }
 
 const redDashed = "\033[31m" // baseline (red)
@@ -522,6 +761,13 @@ func chartCellRowFor(v, min, max float64, rows int) int {
 //   - labelW>0: right labelW columns reserved for high (top-right) and low (bottom-right) labels in bright black
 //   - closed=true: chart and baseline drawn in bright black monochrome
 func buildChartLines(series []float64, prevClose float64, width, rows, labelW int, decimals int, cc chartColors) []string {
+	switch cc.symbol {
+	case "block":
+		return buildChartLinesBlock(series, prevClose, width, rows, labelW, decimals, cc)
+	case "tty":
+		return buildChartLinesTTY(series, prevClose, width, rows, labelW, decimals, cc)
+	}
+	// default / "braille": unchanged braille area chart
 	if rows < 1 {
 		rows = 1
 	}
@@ -649,8 +895,8 @@ func buildChartLines(series []float64, prevClose float64, width, rows, labelW in
 			cell := cells[r][c]
 			isBody := bodyCell[r][c]
 			switch {
-			case isBody && cc.use && cc.truecolor && !cc.closed:
-				b.WriteString(fg24(gradientRGB(cc.base, r, rows)))
+			case isBody && cc.hasGradient():
+				b.WriteString(cc.gradFG(r, rows))
 				b.WriteRune(rune(brailleBase + cell))
 				b.WriteString(rst)
 			case isBody:
@@ -687,6 +933,307 @@ func buildChartLines(series []float64, prevClose float64, width, rows, labelW in
 			} else {
 				b.WriteString(padded)
 			}
+		}
+		out[r] = b.String()
+	}
+	return out
+}
+
+// blockRunes is the 8-level block ramp (1/8 .. 8/8) plus blank at index 0.
+var blockRunes = []rune{' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'}
+
+// blockSymbolFor maps a quantized height level to a (cellRow, rune) for a block-element chart.
+// level is in [0, 8*rows-1] (0=bottom). For the given cellRow (0=top), it returns:
+//   - '█' (full) when the column reaches at or above the top of this cell,
+//   - a partial block '▁'..'▇' for the topmost partially-filled cell,
+//   - ' ' (blank) when the column does not reach this cell.
+//
+// It is a pure function to enable table-driven testing.
+func blockSymbolFor(level, cellRow, rows int) rune {
+	if rows < 1 {
+		rows = 1
+	}
+	if level < 0 {
+		level = 0
+	}
+	maxLevel := 8*rows - 1
+	if level > maxLevel {
+		level = maxLevel
+	}
+	// fill height measured from bottom, in 1/8 sub-cell units (0..8*rows).
+	fill := level + 1
+	// this cell spans sub-levels [cellBottom, cellBottom+8) measured from bottom.
+	cellBottom := (rows - 1 - cellRow) * 8
+	rem := fill - cellBottom
+	switch {
+	case rem >= 8:
+		return '█'
+	case rem <= 0:
+		return ' '
+	default:
+		return blockRunes[rem]
+	}
+}
+
+// buildChartLinesBlock renders an 8-level block-element area chart.
+// Gradient color (depth-aware) is preserved; baseline/guidelines/labels match braille semantics.
+func buildChartLinesBlock(series []float64, prevClose float64, width, rows, labelW int, decimals int, cc chartColors) []string {
+	if rows < 1 {
+		rows = 1
+	}
+	if width < 1 {
+		width = 1
+	}
+	chartW := width - labelW
+	if chartW < 1 {
+		chartW = width
+		labelW = 0
+	}
+
+	out := make([]string, rows)
+
+	hi, lo := prevClose, prevClose
+	hasData := len(series) > 0
+	shi, slo := prevClose, prevClose
+	if hasData {
+		hi, lo = series[0], series[0]
+		shi, slo = series[0], series[0]
+		for _, v := range series {
+			if v > hi {
+				hi = v
+			}
+			if v < lo {
+				lo = v
+			}
+			if v > shi {
+				shi = v
+			}
+			if v < slo {
+				slo = v
+			}
+		}
+		if prevClose > hi {
+			hi = prevClose
+		}
+		if prevClose < lo {
+			lo = prevClose
+		}
+	}
+	if hi == lo {
+		hi += 1
+		lo -= 1
+	}
+
+	// per-column quantized level (0=bottom), in [0, 8*rows-1].
+	levels := make([]int, chartW)
+	yLevels := 8 * rows
+	if hasData {
+		pts := downsample(series, chartW)
+		for x, v := range pts {
+			lv := int(math.Round((v - lo) / (hi - lo) * float64(yLevels-1)))
+			if lv < 0 {
+				lv = 0
+			}
+			if lv >= yLevels {
+				lv = yLevels - 1
+			}
+			levels[x] = lv
+		}
+	}
+
+	baseRow := chartCellRowFor(prevClose, lo, hi, rows)
+	upGuide, downGuide := -1, -1
+	if rows >= 4 {
+		up := prevClose * 1.01
+		dn := prevClose * 0.99
+		if up <= hi && up >= lo {
+			upGuide = chartCellRowFor(up, lo, hi, rows)
+		}
+		if dn <= hi && dn >= lo {
+			downGuide = chartCellRowFor(dn, lo, hi, rows)
+		}
+	}
+
+	rst := cc.reset
+	guideClr := brightBlk
+	baseClr := redDashed
+	mono := cc.mono
+	if cc.closed {
+		mono = brightBlk
+		baseClr = brightBlk
+	}
+	if !cc.use {
+		rst, guideClr, baseClr, mono = "", "", "", ""
+	}
+
+	var hiLabel, loLabel string
+	if labelW > 0 && hasData {
+		hiLabel = truncWidth(fmtNum(shi, decimals), labelW)
+		loLabel = truncWidth(fmtNum(slo, decimals), labelW)
+	}
+
+	for r := 0; r < rows; r++ {
+		var b strings.Builder
+		for c := 0; c < chartW; c++ {
+			sym := blockSymbolFor(levels[c], r, rows)
+			if sym != ' ' {
+				if cc.hasGradient() {
+					b.WriteString(cc.gradFG(r, rows))
+					b.WriteRune(sym)
+					b.WriteString(rst)
+				} else {
+					b.WriteString(mono)
+					b.WriteRune(sym)
+					b.WriteString(rst)
+				}
+				continue
+			}
+			// no body here: draw baseline / guideline markers (every other cell)
+			switch {
+			case r == baseRow && c%2 == 0:
+				b.WriteString(baseClr)
+				b.WriteRune('─')
+				b.WriteString(rst)
+			case (r == upGuide || r == downGuide) && c%2 == 0:
+				b.WriteString(guideClr)
+				b.WriteRune('·')
+				b.WriteString(rst)
+			default:
+				b.WriteRune(' ')
+			}
+		}
+		if labelW > 0 {
+			lab := ""
+			if r == 0 {
+				lab = hiLabel
+			} else if r == rows-1 {
+				lab = loLabel
+			}
+			padded := padLeft(lab, labelW)
+			if cc.use && lab != "" {
+				b.WriteString(guideClr)
+				b.WriteString(padded)
+				b.WriteString(rst)
+			} else {
+				b.WriteString(padded)
+			}
+		}
+		out[r] = b.String()
+	}
+	return out
+}
+
+// buildChartLinesTTY renders an ASCII-only area chart ('#'/'|'/'.').
+// Colors use a single theme/mono escape (no gradient). Labels are kept; the
+// baseline is a '-' dashed line and guidelines use '.'.
+func buildChartLinesTTY(series []float64, prevClose float64, width, rows, labelW int, decimals int, cc chartColors) []string {
+	if rows < 1 {
+		rows = 1
+	}
+	if width < 1 {
+		width = 1
+	}
+	chartW := width - labelW
+	if chartW < 1 {
+		chartW = width
+		labelW = 0
+	}
+
+	out := make([]string, rows)
+
+	hi, lo := prevClose, prevClose
+	hasData := len(series) > 0
+	shi, slo := prevClose, prevClose
+	if hasData {
+		hi, lo = series[0], series[0]
+		shi, slo = series[0], series[0]
+		for _, v := range series {
+			if v > hi {
+				hi = v
+			}
+			if v < lo {
+				lo = v
+			}
+			if v > shi {
+				shi = v
+			}
+			if v < slo {
+				slo = v
+			}
+		}
+		if prevClose > hi {
+			hi = prevClose
+		}
+		if prevClose < lo {
+			lo = prevClose
+		}
+	}
+	if hi == lo {
+		hi += 1
+		lo -= 1
+	}
+
+	// per-column top cell row (0=top) reached by the column.
+	topRow := make([]int, chartW)
+	for i := range topRow {
+		topRow[i] = rows // sentinel: nothing
+	}
+	if hasData {
+		pts := downsample(series, chartW)
+		for x, v := range pts {
+			topRow[x] = chartCellRowFor(v, lo, hi, rows)
+		}
+	}
+
+	baseRow := chartCellRowFor(prevClose, lo, hi, rows)
+
+	rst := cc.reset
+	mono := cc.mono
+	baseClr := redDashed
+	if cc.closed {
+		mono = brightBlk
+		baseClr = brightBlk
+	}
+	if !cc.use {
+		rst, mono, baseClr = "", "", ""
+	}
+
+	var hiLabel, loLabel string
+	if labelW > 0 && hasData {
+		hiLabel = truncWidth(fmtNum(shi, decimals), labelW)
+		loLabel = truncWidth(fmtNum(slo, decimals), labelW)
+	}
+
+	for r := 0; r < rows; r++ {
+		var b strings.Builder
+		for c := 0; c < chartW; c++ {
+			switch {
+			case hasData && r > topRow[c]:
+				// below the top of the column: filled body
+				b.WriteString(mono)
+				b.WriteByte('|')
+				b.WriteString(rst)
+			case hasData && r == topRow[c]:
+				// the column's top cell
+				b.WriteString(mono)
+				b.WriteByte('#')
+				b.WriteString(rst)
+			case r == baseRow && c%2 == 0:
+				b.WriteString(baseClr)
+				b.WriteByte('-')
+				b.WriteString(rst)
+			default:
+				b.WriteByte('.')
+			}
+		}
+		if labelW > 0 {
+			lab := ""
+			if r == 0 {
+				lab = hiLabel
+			} else if r == rows-1 {
+				lab = loLabel
+			}
+			b.WriteString(padLeft(lab, labelW))
 		}
 		out[r] = b.String()
 	}
@@ -972,7 +1519,39 @@ func buildTopBorderW(bc boxChars, border, rst, name string, nameW int, secName s
 	return b.String()
 }
 
-// isClosed returns true if regularMarketTime (epoch seconds) is more than 30 minutes old.
+// buildBottomBorderHL constructs the bottom border with a right-aligned
+// "H:<high> L:<low>" (and optional range-width %) label embedded in bright black.
+// innerW is the inner display width. When the label does not fit, a plain border
+// is returned. border/lblClr/rst are color escapes (empty when color is disabled).
+func buildBottomBorderHL(bc boxChars, border, lblClr, rst, label string, innerW int) string {
+	lblW := stringWidth(label)
+	// need: dash + " " + label + " " + (corner handled separately). Reserve a left dash run.
+	// layout inner: <dash...> " " label " "
+	if lblW == 0 || lblW+3 > innerW {
+		return border + bc.bl + strings.Repeat(bc.h, innerW) + bc.br + rst
+	}
+	dashN := innerW - (1 + lblW + 1)
+	if dashN < 1 {
+		return border + bc.bl + strings.Repeat(bc.h, innerW) + bc.br + rst
+	}
+	var b strings.Builder
+	b.WriteString(border)
+	b.WriteString(bc.bl)
+	b.WriteString(strings.Repeat(bc.h, dashN))
+	b.WriteString(" ")
+	if lblClr != "" {
+		b.WriteString(lblClr)
+		b.WriteString(label)
+		b.WriteString(border) // back to border color for trailing pieces
+	} else {
+		b.WriteString(label)
+	}
+	b.WriteString(" ")
+	b.WriteString(bc.br)
+	b.WriteString(rst)
+	return b.String()
+}
+
 // epoch<=0 (unavailable) is not treated as closed.
 func isClosed(epoch int64, now time.Time) bool {
 	if epoch <= 0 {
@@ -1009,6 +1588,13 @@ func renderTile(item symbols.Item, r *fetcher.Result, outerW, chartN int, useCol
 }
 
 func renderTileL(item symbols.Item, r *fetcher.Result, outerW, chartN int, useColor, redGreen, ascii, truecolor bool, secName string, lang string, th Theme) []string {
+	// Legacy entry point: braille chart, legacy color depth (truecolor flag decides).
+	return renderTileLG(item, r, outerW, chartN, useColor, redGreen, ascii, truecolor, secName, lang, th, "braille", 0)
+}
+
+// renderTileLG is renderTileL with explicit graph-symbol mode and color depth.
+// symMode: ""|"braille"|"block"|"tty". depth: 0 (legacy)|16|8(256)|24(truecolor).
+func renderTileLG(item symbols.Item, r *fetcher.Result, outerW, chartN int, useColor, redGreen, ascii, truecolor bool, secName string, lang string, th Theme, symMode string, depth int) []string {
 	if outerW < minTileW {
 		outerW = minTileW
 	}
@@ -1093,7 +1679,18 @@ func renderTileL(item symbols.Item, r *fetcher.Result, outerW, chartN int, useCo
 	// top row: change% badge (left-aligned)
 	badge := buildBadgeTheme(pctText, r.Change, useColor, redGreen, th)
 	badgePlainW := stringWidth(" " + pctText + " ")
-	badgeLine := badge + strings.Repeat(" ", maxInt(0, contentW-badgePlainW))
+	trail := maxInt(0, contentW-badgePlainW)
+	// B9: small gradient meter bar in the trailing space (block/tty modes only,
+	// to keep the default braille appearance unchanged). Omitted when too narrow.
+	badgeLine := badge + strings.Repeat(" ", trail)
+	if useColor && (symMode == "block" || symMode == "tty") && trail >= 7 {
+		mw := trail - 1 // leave one space before the meter
+		if mw > 10 {
+			mw = 10
+		}
+		meter := meterBar(r.ChangePct, mw, th, true, redGreen, depth)
+		badgeLine = badge + strings.Repeat(" ", trail-mw) + meter
+	}
 	lines = append(lines, wrap(badgeLine))
 
 	// chart rows: braille area chart (baseline, guidelines, labels, closed-market support)
@@ -1112,6 +1709,8 @@ func renderTileL(item symbols.Item, r *fetcher.Result, outerW, chartN int, useCo
 		base:      baseRGBForTheme(r.Change, redGreen, th),
 		mono:      clr,
 		reset:     rst,
+		symbol:    symMode,
+		depth:     depth,
 	}
 	rowsStr := buildChartLines(r.Series, r.PrevClose, contentW, chartN, labelW, item.Decimals, cclr)
 	for _, rowStr := range rowsStr {
@@ -1132,7 +1731,35 @@ func renderTileL(item symbols.Item, r *fetcher.Result, outerW, chartN int, useCo
 		lines = append(lines, wrap(padPlainRight(wclr+alt+rst, alt, contentW)))
 	}
 
-	lines = append(lines, bottom)
+	// B2: bottom border with day high/low (+ range width %) label, right-aligned.
+	dayBottom := bottom
+	if outerW >= 30 && len(r.Series) > 0 {
+		shi, slo := r.Series[0], r.Series[0]
+		for _, v := range r.Series {
+			if v > shi {
+				shi = v
+			}
+			if v < slo {
+				slo = v
+			}
+		}
+		label := "H:" + fmtNum(shi, item.Decimals) + " L:" + fmtNum(slo, item.Decimals)
+		// add range width % when it still fits.
+		if slo != 0 {
+			rng := (shi - slo) / slo * 100
+			withRng := label + " " + fmtPctPlain(rng)
+			if stringWidth(withRng)+3 <= innerW {
+				label = withRng
+			}
+		}
+		lblClr := th.BrightBlk
+		if !useColor {
+			lblClr = ""
+		}
+		dayBottom = buildBottomBorderHL(bc, border, lblClr, rst, label, innerW)
+	}
+
+	lines = append(lines, dayBottom)
 	return lines
 }
 
@@ -1262,12 +1889,19 @@ func RenderDashboard(data map[string]*fetcher.Result, sections []string, opt Opt
 	useColor := !opt.NoColor
 	ascii := opt.NoColor // non-color mode falls back to ASCII borders
 	truecolor := useColor && truecolorSupported()
+	depth := colorDepth()
+	symMode := resolveGraphSymbol(opt.GraphSymbol, opt.NoColor, localeIsUTF8())
 	loc := locOf(opt.Loc)
 	termWidth := opt.TermWidth
 	termRows := opt.TermRows
 	if termWidth <= 0 {
 		termWidth = detectTermWidth()
 	}
+
+	// B7: if a rolling history is provided, substitute each symbol's intraday
+	// Series with the accumulated history. Work on shallow copies so the cached
+	// Result objects (shared with the fetcher cache) are never mutated.
+	data = applyHistory(data, opt.History)
 
 	keys := sections
 	if len(keys) == 0 {
@@ -1289,6 +1923,11 @@ func RenderDashboard(data map[string]*fetcher.Result, sections []string, opt Opt
 			fi.Name = i18n.SymbolName(opt.Lang, it.Symbol, it.Name)
 			flat = append(flat, flatItem{item: fi, secName: secTitle})
 		}
+	}
+
+	// B5: detail view
+	if opt.DetailView && opt.SelIndex >= 0 && opt.SelIndex < len(flat) {
+		return renderDetail(flat[opt.SelIndex], data, opt, termWidth, termRows, useColor, ascii, truecolor, depth, symMode, loc)
 	}
 
 	headerLines := 1 // header only (section heading lines removed)
@@ -1359,8 +1998,15 @@ func RenderDashboard(data map[string]*fetcher.Result, sections []string, opt Opt
 	}
 	// no blank line after header
 
+	// B10: highlight color for selected tile border
+	selBorder := th.Bold + th.BoldWhite
+	if !useColor {
+		selBorder = ""
+	}
+
 	// lay out in cols-column grid sequentially (row-major). Last row may be partial.
 	stageIdx := 0
+	flatIdx := 0
 	for i := 0; i < len(flat); i += cols {
 		end := i + cols
 		if end > len(flat) {
@@ -1377,7 +2023,12 @@ func RenderDashboard(data map[string]*fetcher.Result, sections []string, opt Opt
 		var tiles [][]string
 		for ci, fi := range rowItems {
 			w := colWidths[ci]
-			tiles = append(tiles, renderTileL(fi.item, data[fi.item.Symbol], w, chartN, useColor, opt.RedGreen, ascii, truecolor, fi.secName, opt.Lang, th))
+			tileLines := renderTileLG(fi.item, data[fi.item.Symbol], w, chartN, useColor, opt.RedGreen, ascii, truecolor, fi.secName, opt.Lang, th, symMode, depth)
+			// B10: highlight selected tile
+			if useColor && flatIdx+ci == opt.SelIndex {
+				tileLines = highlightTile(tileLines, w, selBorder, th.Reset, ascii)
+			}
+			tiles = append(tiles, tileLines)
 		}
 		// empty cells in the last row are left blank (no tile placed).
 		// concatenate tiles horizontally (zero gap)
@@ -1388,8 +2039,158 @@ func RenderDashboard(data map[string]*fetcher.Result, sections []string, opt Opt
 			}
 			lines = append(lines, strings.Join(parts, ""))
 		}
+		flatIdx += len(rowItems)
 		stageIdx++
 	}
+	return strings.Join(lines, "\n")
+}
+
+// highlightTile replaces the border escapes in a rendered tile with highlighted (bold+bright) borders.
+func highlightTile(tileLines []string, outerW int, hlColor, rst string, ascii bool) []string {
+	bc := getBoxChars(ascii)
+	innerW := outerW - 2
+	if innerW < 0 {
+		innerW = 0
+	}
+	out := make([]string, len(tileLines))
+	for i, line := range tileLines {
+		if i == 0 {
+			out[i] = hlColor + bc.tl + strings.Repeat(bc.h, innerW) + bc.tr + rst
+		} else if i == len(tileLines)-1 {
+			out[i] = hlColor + bc.bl + strings.Repeat(bc.h, innerW) + bc.br + rst
+		} else {
+			out[i] = hlColor + bc.v + rst + extractInner(line) + hlColor + bc.v + rst
+		}
+	}
+	return out
+}
+
+// extractInner extracts the raw inner content of a tile line (between the first and last │ or | border chars),
+// including any escape sequences that are part of the inner content.
+func extractInner(line string) string {
+	// Find byte positions of first and last border character
+	firstBox := strings.Index(line, "│")
+	lastBox := strings.LastIndex(line, "│")
+	if firstBox >= 0 && lastBox > firstBox {
+		return line[firstBox+3 : lastBox] // │ is 3 bytes
+	}
+	// ASCII fallback
+	firstPipe := strings.IndexByte(line, '|')
+	lastPipe := strings.LastIndexByte(line, '|')
+	if firstPipe >= 0 && lastPipe > firstPipe {
+		return line[firstPipe+1 : lastPipe]
+	}
+	return line
+}
+
+// renderDetail renders a full-width detail view for the selected item (B5).
+func renderDetail(fi flatItem, data map[string]*fetcher.Result, opt Options, termWidth, termRows int, useColor, ascii, truecolor bool, depth int, symMode string, loc *time.Location) string {
+	th := opt.Theme
+	if th.Reset == "" {
+		th = defaultTheme
+	}
+	rst := th.Reset
+	wclr := th.BoldWhite
+	if !useColor {
+		rst, wclr = "", ""
+	}
+
+	r := data[fi.item.Symbol]
+
+	var lines []string
+	// header
+	now := time.Now().In(loc).Format("2006-01-02 15:04:05 -07:00")
+	header := "kabuto    Updated: " + now
+	if opt.RangeLabel != "" {
+		header += "  [" + opt.RangeLabel + "]"
+	}
+	if useColor {
+		h := truncWidth(header, termWidth)
+		hw := stringWidth(h)
+		pad := termWidth - hw
+		if pad < 0 {
+			pad = 0
+		}
+		lines = append(lines, th.Reverse+h+strings.Repeat(" ", pad)+th.Reset)
+	} else {
+		lines = append(lines, truncWidth(header, termWidth))
+	}
+
+	// Detail info line
+	sym := currencySymbol("")
+	priceS, changeS, pctS, prevS, hiS, loS, rngS := "N/A", "", "", "", "", "", ""
+	var series []float64
+	var prevClose float64
+	change := 0.0
+	if r != nil {
+		sym = currencySymbol(r.Currency)
+		priceS = sym + fmtNumLang(r.Price, fi.item.Decimals, opt.Lang)
+		changeS = fmtChangeLang(r.Change, fi.item.Decimals, opt.Lang)
+		pctS = fmtPct(r.ChangePct)
+		prevS = sym + fmtNumLang(r.PrevClose, fi.item.Decimals, opt.Lang)
+		series = r.Series
+		prevClose = r.PrevClose
+		change = r.Change
+		if len(series) > 0 {
+			shi, slo := series[0], series[0]
+			for _, v := range series {
+				if v > shi {
+					shi = v
+				}
+				if v < slo {
+					slo = v
+				}
+			}
+			hiS = sym + fmtNumLang(shi, fi.item.Decimals, opt.Lang)
+			loS = sym + fmtNumLang(slo, fi.item.Decimals, opt.Lang)
+			if slo != 0 {
+				rngS = fmtPctPlain((shi - slo) / slo * 100)
+			}
+		}
+	}
+
+	clr := colorForTheme(change, useColor, opt.RedGreen, th)
+	// Name + price line
+	nameLine := wclr + fi.item.Name + rst + "  " + wclr + priceS + rst
+	if changeS != "" {
+		nameLine += "  " + clr + changeS + " (" + pctS + ")" + rst
+	}
+	lines = append(lines, nameLine)
+
+	// Stats line
+	statsLine := "Prev: " + prevS + "  High: " + hiS + "  Low: " + loS
+	if rngS != "" {
+		statsLine += "  Range: " + rngS
+	}
+	if opt.RangeLabel != "" {
+		statsLine += "  [" + opt.RangeLabel + "]"
+	}
+	lines = append(lines, statsLine)
+	lines = append(lines, "") // blank separator
+
+	// Chart: use remaining terminal height
+	chartH := termRows - len(lines) - 1
+	if chartH < 1 {
+		chartH = 4
+	}
+	chartW := termWidth
+	if chartW < 1 {
+		chartW = 80
+	}
+
+	cclr := chartColors{
+		use:       useColor,
+		truecolor: truecolor,
+		closed:    r != nil && isClosed(r.Epoch, time.Now()),
+		base:      baseRGBForTheme(change, opt.RedGreen, th),
+		mono:      clr,
+		reset:     rst,
+		symbol:    symMode,
+		depth:     depth,
+	}
+	chartLines := buildChartLines(series, prevClose, chartW, chartH, 0, fi.item.Decimals, cclr)
+	lines = append(lines, chartLines...)
+
 	return strings.Join(lines, "\n")
 }
 

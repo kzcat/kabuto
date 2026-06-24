@@ -10,3 +10,6 @@ func MakeRaw(fd int) (*State, error) { return nil, nil }
 
 // Restore is a no-op on non-unix.
 func Restore(fd int, st *State) error { return nil }
+
+// SetReadTimeout is a no-op on non-unix.
+func SetReadTimeout(fd int, tenths byte) error { return nil }

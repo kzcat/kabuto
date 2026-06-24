@@ -19,7 +19,7 @@ import (
 	"github.com/kzcat/kabuto/internal/term"
 )
 
-var version = "0.2.0"
+var version = "0.3.0"
 
 // normalizeArgs expands getopt-style short flags that glue a value to the flag
 // (e.g. "-w1" or "-sus") into the separate "-w 1" / "-s us" form that Go's flag
@@ -94,7 +94,8 @@ func usage() {
 	fmt.Fprintf(w, "      --lang CODE      UI language (en, ja, zh, ko, de, fr, es; default from $LANG)\n")
 	fmt.Fprintf(w, "      --source auto|yahoo|stooq  Data source (default auto)\n")
 	fmt.Fprintf(w, "      --range 1d|5d|1mo|6mo|1y   History range (default 1d)\n")
-	fmt.Fprintf(w, "      --theme NAME     Color theme (default|mono|light|highcontrast)\n")
+	fmt.Fprintf(w, "      --theme NAME     Color theme (default|mono|light|highcontrast|dracula|nord|gruvbox|solarized)\n")
+	fmt.Fprintf(w, "      --graph MODE     Chart symbol mode (auto|braille|block|tty; default auto)\n")
 	fmt.Fprintf(w, "      --add SYMBOL[:CC[:DEC]]  Add ad-hoc symbol to Watchlist (repeatable)\n")
 	fmt.Fprintf(w, "      --config PATH    Config file (default ~/.config/kabuto/config.json)\n")
 	fmt.Fprintf(w, "  -v, --version        Print version and exit\n")
@@ -115,6 +116,7 @@ func main() {
 	var rangeFlag string
 	var themeFlag string
 	var configPath string
+	var graphFlag string
 
 	flag.Usage = usage
 
@@ -134,8 +136,9 @@ func main() {
 	flag.BoolVar(&showVersion, "version", false, "Print version")
 	flag.StringVar(&sourceFlag, "source", "auto", "Data source (auto|yahoo|stooq)")
 	flag.StringVar(&rangeFlag, "range", "1d", "Time range (1d|5d|1mo|6mo|1y)")
-	flag.StringVar(&themeFlag, "theme", "default", "Color theme (default|mono|light|highcontrast)")
+	flag.StringVar(&themeFlag, "theme", "default", "Color theme (default|mono|light|highcontrast|dracula|nord|gruvbox|solarized)")
 	flag.StringVar(&configPath, "config", "", "Config file path")
+	flag.StringVar(&graphFlag, "graph", "auto", "Chart symbol mode (auto|braille|block|tty)")
 	flag.CommandLine.Parse(normalizeArgs(os.Args[1:]))
 
 	if showVersion {
@@ -292,7 +295,7 @@ func main() {
 		renderSections = order
 	}
 
-	opt := render.Options{NoColor: noColor, RedGreen: redGreen, Loc: loc, CryptoItems: cryptoItems, Lang: resolvedLang, RangeLabel: rangeFlag, Theme: render.ThemeByName(themeFlag)}
+	opt := render.Options{NoColor: noColor, RedGreen: redGreen, Loc: loc, CryptoItems: cryptoItems, Lang: resolvedLang, RangeLabel: rangeFlag, Theme: render.ThemeByName(themeFlag), GraphSymbol: graphFlag}
 
 	// Resolve range and sources
 	rng := fetcher.ParseRange(rangeFlag)
@@ -326,6 +329,11 @@ func runWatch(sec int, collect func() []string, sections []string, opt render.Op
 	// Try to enter raw mode for interactive keys.
 	var rawState *term.State
 	rawState, _ = term.MakeRaw(int(os.Stdin.Fd()))
+	if rawState != nil {
+		// Poll-style reads (VMIN=0/VTIME=1, ~0.1s) so the key reader can tell a
+		// lone ESC apart from the start of an arrow-key sequence.
+		_ = term.SetReadTimeout(int(os.Stdin.Fd()), 1)
+	}
 
 	restore := func() {
 		if rawState != nil {
@@ -369,6 +377,7 @@ func runWatch(sec int, collect func() []string, sections []string, opt render.Op
 		FillHeight: true,
 		MinCols:    1,
 		Range:      rng,
+		Sel:        -1,
 	}
 	// Determine initial ColorMode from opt
 	if opt.NoColor {
@@ -380,12 +389,47 @@ func runWatch(sec int, collect func() []string, sections []string, opt render.Op
 	var lastData map[string]*fetcher.Result
 	var lastCols int // last actual column count used
 
+	// B7: rolling history per symbol. Only accumulated/used when the active
+	// range is 1d; for other ranges the API Series is used as-is.
+	hist := map[string][]float64{}
+	histInit := false // whether hist has been seeded from the first 1d fetch
+
+	// recordHist updates the rolling buffers from a fresh fetch result set.
+	// On the first 1d fetch it seeds from each result's intraday Series; on
+	// subsequent fetches it appends the latest price. Cleared when not 1d.
+	recordHist := func(data map[string]*fetcher.Result) {
+		if uiState.Range != fetcher.Range1D {
+			// Non-1d: history not used; reset so a later switch back to 1d reseeds.
+			hist = map[string][]float64{}
+			histInit = false
+			return
+		}
+		if !histInit {
+			for sym, r := range data {
+				if r != nil {
+					hist[sym] = seedHist(r.Series, histLimit)
+				}
+			}
+			histInit = true
+			return
+		}
+		for sym, r := range data {
+			if r != nil {
+				hist[sym] = appendHist(hist[sym], r.Price, histLimit)
+			}
+		}
+	}
+
 	draw := func() {
 		cols, rows := render.DetectTermSize()
 		o := uiState.applyTo(opt)
 		o.TermWidth = cols
 		o.TermRows = rows
 		o.Watch = true
+		// B7: only feed rolling history to the renderer for the 1d range.
+		if uiState.Range == fetcher.Range1D {
+			o.History = hist
+		}
 
 		// Determine effective sections
 		drawSections := sections
@@ -408,15 +452,13 @@ func runWatch(sec int, collect func() []string, sections []string, opt render.Op
 
 	// Start key reader goroutine
 	keyCh := make(chan Key, 8)
-	if rawState != nil {
-		go readKeys(os.Stdin, keyCh)
-	} else {
-		// Non-TTY: read stdin for 'q' or EOF
-		go readKeys(os.Stdin, keyCh)
-	}
+	// rawState != nil means VTIME polling is active (ignore timeout EOFs);
+	// otherwise stdin is a pipe where a real EOF should close the reader.
+	go readKeys(os.Stdin, rawState != nil, keyCh)
 
 	// Initial fetch
 	lastData = fetcher.FetchAll(collect(), uiState.Range, sources...)
+	recordHist(lastData)
 	draw()
 
 	ticker := time.NewTicker(time.Duration(sec) * time.Second)
@@ -428,7 +470,7 @@ func runWatch(sec int, collect func() []string, sections []string, opt render.Op
 				// stdin closed (EOF)
 				return
 			}
-			newState, action := Dispatch(uiState, key, lastCols, sections)
+			newState, action := Dispatch(uiState, key, lastCols, sections, uiState.MaxCols)
 			uiState = newState
 			switch action {
 			case ActionQuit:
@@ -441,6 +483,7 @@ func runWatch(sec int, collect func() []string, sections []string, opt render.Op
 				_ = drawSections
 				opt.RangeLabel = uiState.Range.String()
 				lastData = fetcher.FetchAll(collect(), uiState.Range, sources...)
+				recordHist(lastData)
 				draw()
 			default:
 				draw()
@@ -448,6 +491,7 @@ func runWatch(sec int, collect func() []string, sections []string, opt render.Op
 		case <-ticker.C:
 			if !uiState.Paused {
 				lastData = fetcher.FetchAll(collect(), uiState.Range, sources...)
+				recordHist(lastData)
 			}
 			draw()
 		case <-winCh:
@@ -482,22 +526,105 @@ func flatItems(secs []string, opt render.Options) []struct{} {
 	return make([]struct{}, count)
 }
 
-// readKeys reads from r one byte at a time and sends Keys on ch.
-// Closes ch on EOF or error.
-func readKeys(r io.Reader, ch chan<- Key) {
+// readKeys reads from r and sends parsed Keys on ch. It understands ESC
+// sequences (arrow keys) by buffering bytes after a 0x1b and
+// delegating to parseEscapeSeq. To distinguish a lone ESC (back/quit) from the
+// start of a sequence, the caller is expected to have set the tty to a polling
+// read (VMIN=0/VTIME=1) so Read returns promptly when no further byte arrives.
+// When hasTimeout is set the read is poll-style: a 0-byte read (reported as
+// io.EOF by os.File on a tty) means "no key yet", not a real close, so it is
+// ignored. Without it (non-tty/pipe), io.EOF closes ch.
+func readKeys(r io.Reader, hasTimeout bool, ch chan<- Key) {
 	defer close(ch)
-	buf := make([]byte, 1)
-	for {
-		n, err := r.Read(buf)
-		if n > 0 {
-			b := buf[0]
-			if b == 0x1b {
+	rd := make([]byte, 64)
+	var pending []byte // buffered bytes belonging to an in-progress ESC sequence
+
+	flushPending := func() {
+		// We have an ESC followed by `pending` bytes (without the ESC). Try to
+		// parse; if still incomplete after a timeout, treat as a lone ESC and
+		// re-emit the buffered bytes as ordinary keys.
+		for {
+			if len(pending) == 0 {
 				ch <- Key{Esc: true}
-			} else {
-				ch <- Key{R: rune(b)}
+				return
 			}
+			key, consumed, complete := parseEscapeSeq(pending)
+			if !complete {
+				// Incomplete and no more data arrived: lone ESC, then replay.
+				ch <- Key{Esc: true}
+				for _, b := range pending {
+					ch <- Key{R: rune(b)}
+				}
+				pending = nil
+				return
+			}
+			ch <- key
+			pending = pending[consumed:]
+			if len(pending) == 0 {
+				return
+			}
+			// Loop to parse any remaining buffered bytes (another ESC or key).
+			if pending[0] == 0x1b {
+				pending = pending[1:]
+				continue
+			}
+			b := pending[0]
+			pending = pending[1:]
+			ch <- Key{R: rune(b)}
+		}
+	}
+
+	for {
+		n, err := r.Read(rd)
+		if err == io.EOF && hasTimeout {
+			// VMIN=0/VTIME poll: a 0-byte tty read surfaces as io.EOF but just
+			// means no key arrived in this interval. Keep polling.
+			err = nil
+		}
+		if n > 0 {
+			data := rd[:n]
+			for len(data) > 0 {
+				b := data[0]
+				if b == 0x1b {
+					data = data[1:]
+					// Collect the rest of this read as the candidate sequence.
+					pending = append(pending[:0], data...)
+					key, consumed, complete := parseEscapeSeq(pending)
+					if complete {
+						ch <- key
+						data = pending[consumed:]
+						pending = nil
+						continue
+					}
+					// Incomplete: wait for the next read (or timeout) to finish.
+					data = nil
+				} else if len(pending) > 0 {
+					// Continuation bytes of an in-progress sequence.
+					pending = append(pending, b)
+					data = data[1:]
+					key, consumed, complete := parseEscapeSeq(pending)
+					if complete {
+						ch <- key
+						rem := pending[consumed:]
+						pending = nil
+						// Prepend any leftover to remaining data.
+						if len(rem) > 0 {
+							data = append(append([]byte{}, rem...), data...)
+						}
+					}
+				} else {
+					ch <- Key{R: rune(b)}
+					data = data[1:]
+				}
+			}
+		} else if len(pending) > 0 {
+			// Timed-out read (VTIME) with a buffered partial sequence: resolve it.
+			flushPending()
 		}
 		if err != nil {
+			if len(pending) > 0 {
+				flushPending()
+			}
 			return
 		}
 	}

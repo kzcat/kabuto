@@ -67,6 +67,61 @@ var highcontrastTheme = Theme{
 	Bold:      "\033[1m",
 }
 
+// Popular terminal palettes. UpColor/DownColor stay as robust 16-color escapes
+// for the change text; UpRGB/DownRGB carry each palette's signature colors for
+// the truecolor chart gradient (degraded to 256/16 color by the renderer).
+var draculaTheme = Theme{
+	Name:      "dracula",
+	UpColor:   "\033[92m",
+	DownColor: "\033[91m",
+	UpRGB:     [3]int{80, 250, 123}, // #50fa7b
+	DownRGB:   [3]int{255, 85, 85},  // #ff5555
+	BoldWhite: "\033[1;37m",
+	BrightBlk: "\033[90m",
+	Reset:     "\033[0m",
+	Reverse:   "\033[7m",
+	Bold:      "\033[1m",
+}
+
+var nordTheme = Theme{
+	Name:      "nord",
+	UpColor:   "\033[32m",
+	DownColor: "\033[31m",
+	UpRGB:     [3]int{163, 190, 140}, // #a3be8c
+	DownRGB:   [3]int{191, 97, 106},  // #bf616a
+	BoldWhite: "\033[1;37m",
+	BrightBlk: "\033[90m",
+	Reset:     "\033[0m",
+	Reverse:   "\033[7m",
+	Bold:      "\033[1m",
+}
+
+var gruvboxTheme = Theme{
+	Name:      "gruvbox",
+	UpColor:   "\033[92m",
+	DownColor: "\033[91m",
+	UpRGB:     [3]int{184, 187, 38}, // #b8bb26
+	DownRGB:   [3]int{251, 73, 52},  // #fb4934
+	BoldWhite: "\033[1;37m",
+	BrightBlk: "\033[90m",
+	Reset:     "\033[0m",
+	Reverse:   "\033[7m",
+	Bold:      "\033[1m",
+}
+
+var solarizedTheme = Theme{
+	Name:      "solarized",
+	UpColor:   "\033[32m",
+	DownColor: "\033[31m",
+	UpRGB:     [3]int{133, 153, 0}, // #859900
+	DownRGB:   [3]int{220, 50, 47}, // #dc322f
+	BoldWhite: "\033[1;37m",
+	BrightBlk: "\033[90m",
+	Reset:     "\033[0m",
+	Reverse:   "\033[7m",
+	Bold:      "\033[1m",
+}
+
 // ThemeByName returns a Theme by name. Unknown names fall back to "default".
 func ThemeByName(name string) Theme {
 	switch name {
@@ -76,6 +131,14 @@ func ThemeByName(name string) Theme {
 		return lightTheme
 	case "highcontrast":
 		return highcontrastTheme
+	case "dracula":
+		return draculaTheme
+	case "nord":
+		return nordTheme
+	case "gruvbox":
+		return gruvboxTheme
+	case "solarized":
+		return solarizedTheme
 	default:
 		return defaultTheme
 	}

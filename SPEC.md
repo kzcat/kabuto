@@ -304,3 +304,65 @@ sekaino-kabuka/
 --range 1d|5d|1mo|6mo|1y History range (default 1d)
 --theme NAME             Color theme (default|mono|light|highcontrast)
 ```
+
+## B. btop 由来 UI リッチ化 (v0.3.0)
+
+`cmd/kabuto/main.go` の `version` を `"0.3.0"` に更新する。
+ファイル競合回避のため以下のフェーズで順次実装する(各フェーズ = 1 回の kiro 委譲):
+
+- **Phase 1**(render プリミティブ・対話状態なし): B1, B2, B3, B9
+- **Phase 2a**(選択/ナビ): B5, B8, B10
+- **Phase 2b**(入力/履歴): B6, B7
+- **Phase 3**(テーマ): B4
+
+すべて **標準ライブラリのみ**。既存の全角=2 桁揃え・点字チャート・truecolor グラデーション・NO_COLOR/テーマ/i18n を壊さないこと。
+
+### B1. グラフシンボル切替 (braille / block / tty)
+- `render.Options` に `GraphSymbol string`(`"auto"|"braille"|"block"|"tty"`、既定 `auto`)を追加。`--graph` フラグ(`main.go`)で指定。
+- `auto`: ASCII フォールバック時(`opt.NoColor` で ascii box のとき)または非 UTF-8 ロケール時は `tty`、それ以外は `braille`。
+- `braille`: 現状の点字エリアチャート(変更なし)。
+- `block`: 8 段ブロック要素 `▁▂▃▄▅▆▇█` で各列の高さを表現(フォント非依存)。チャートの行数 `rows` を満たすよう、full 行は `█`、最上段のみ部分ブロック。グラデーション色は維持。
+- `tty`: ASCII のみ(例 `#`/`|`/`.` 等)。色はテーマ単色で可。
+- `buildChartLines` をシンボルモードで分岐させる。high/low ラベル・前日比ベースライン・±1% ガイドラインは可能な範囲で維持(tty は簡略可)。
+
+### B2. ボックス四隅/枠ラベル
+- 各タイルの枠に high/low と当日レンジ幅(%)を埋め込む。`buildTopBorderW`(上枠)に加え下枠 or 右寄せで `H:<high> L:<low>` を表示。
+- 桁揃え(全角=2)・既存の name/secName 表示を壊さない。市場閉場(grey)時も整合。
+
+### B3. カラー深度フォールバック (truecolor → 256 → 16)
+- カラー深度検出関数を追加: truecolor(`COLORTERM=truecolor|24bit`)→ 256(`TERM` に `256` を含む)→ 16(それ以外)。
+- `fg24`/`gradientRGB` 系を、深度に応じて 256 色(`ESC[38;5;Nm`、RGB→6x6x6 キューブ近似)/ 16 色(最近傍 ANSI)へ劣化させる。truecolor 環境の見た目は不変。
+- `--graph`/テーマ/`--rg` と直交。テスト可能なよう純関数(RGB→256 index, RGB→16 index)を切り出す。
+
+### B9. グラデーション水平メーターバー
+- 騰落率の大きさを btop 風メーター `█████░░░` で色付き表示するヘルパー `meterBar(pct, width, th, useColor, redGreen, depth) string` を追加。
+- タイル内の価格/前日比の近くに小さく配置(レイアウト幅を圧迫しない。狭いときは省略可)。色は B3 の深度に追従。
+
+### B5. フォーカス詳細ビュー
+- `UIState` に `Focus int`(-1 = 無効)を追加。`Enter`(`key.R == 13`)で現在の(または先頭の)銘柄にフォーカス。`←↑→↓` 矢印(B6 の ESC シーケンス解析後でも、まずは `j/k`/`n/p` 等の代替キーで可)で銘柄移動。`Esc` は**フォーカス中は詳細を閉じるだけで quit しない**(フォーカス無効時のみ従来どおり quit)。
+- フォーカス中は全幅の大きい点字チャート + 統計(銘柄名・現在値・前日比・前日終値・当日 high/low・レンジ幅・range ラベル)を表示する `render.RenderDetail(...)` を追加。
+- `Dispatch` の Esc/quit 分岐を Focus 状態で条件分けする。
+
+### B8. レイアウトプリセット
+- `UIState` に `Preset int` を追加。キー `p` で循環: `all`(全セクション)→ `majors`(japan/us/europe 等の主要株価指数)→ `fxcrypto`(forex+crypto)→ all。
+- プリセットは `st.Sections` を設定する形で実装(既存の 1-9 トグルと整合)。`0`/`a` で all に戻るのは従来どおり。
+
+### B10. フォーカス枠ハイライト
+- B5 の Focus 中のタイルの枠を `Theme.Bold`/明色で強調(視線誘導)。グリッド表示時に有効。
+- 非フォーカス時は従来どおり。color 無効時はハイライト無効 or 太字のみ。
+
+### B6. 矢印キー対応(マウスは廃止)
+- 当初 SGR マウス(クリック/ホイール)も実装したが、**ユーザー判断で廃止**(2026-06-25)。クリック→タイルの座標近似が端末サイズ依存で不正確だったのも理由。
+- **矢印キーのみ採用**: `readKeys` が `ESC[A/B/C/D` を解析して `Key{Up/Down/Right/Left}` を返し、`Dispatch` で 上/左→前の銘柄、下/右→次の銘柄(`n`/`b` と同等)に割り当てる。
+- マウス有効化シーケンス・SGR 解析・`tileIndexAt`・`Key` のマウス用フィールドは削除済み。
+
+### B7. ローリング履歴バッファ
+- watch ループで銘柄ごとに直近値のローリング系列を保持し、リフレッシュ間でチャートが左へ滑らかに流れるようにする。
+- `runWatch` 内に `map[symbol][]float64`(上限長 = チャート幅相当)を持ち、各リフレッシュで最新値を push。チャート描画はこの系列を優先使用(初回は従来の intraday 系列で初期化)。
+- 1d 以外の range では従来の API 系列をそのまま使う(履歴蓄積は 1d/watch のみ)。
+
+### B4. ビルトインテーマ拡充(ファイルテーマは廃止)
+- 当初 `~/.config/kabuto/themes/*.json` のロード可能テーマを実装したが、**ユーザー判断でファイル(config)方式は廃止**(2026-06-25)。ローダ(`theme_file.go`/`LoadTheme`/`themesDir`/`rgbToANSI`)は削除済み。
+- 代わりに `internal/render/theme.go` の**ビルトインテーマを拡充**: 既存 `default`/`mono`/`light`/`highcontrast` に加え、定番パレット `dracula`/`nord`/`gruvbox`/`solarized` を追加(計8種)。
+- 各テーマは `UpColor`/`DownColor`(16色エスケープ・変動テキスト用)と `UpRGB`/`DownRGB`(チャートのグラデーション色、B3 の深度で 256/16 に劣化)を持つ。`--theme <name>` は `ThemeByName` でビルトインのみ解決、未知名は default。
+- `--theme` のヘルプ(usage/flag)と README の Options 表・Themes 節を更新。

@@ -26,6 +26,12 @@ const (
 type Key struct {
 	R   rune
 	Esc bool
+
+	// Arrow keys (parsed from ESC [ A/B/C/D).
+	Up    bool
+	Down  bool
+	Right bool
+	Left  bool
 }
 
 // UIState holds the interactive UI state (independent of network/TTY).
@@ -39,10 +45,14 @@ type UIState struct {
 	MinCols    int
 	MaxCols    int
 	Range      fetcher.Range
+	Sel        int  // grid selection index (-1 = none)
+	Detail     bool // detail view active
+	Preset     int  // layout preset (0=all, 1=majors, 2=fxcrypto)
 }
 
 // Dispatch is a pure function: given current state + key + context, returns new state + action.
-func Dispatch(st UIState, key Key, currentCols int, allSections []string) (UIState, Action) {
+// itemCount is the total number of grid items (used to clamp Sel).
+func Dispatch(st UIState, key Key, currentCols int, allSections []string, itemCount int) (UIState, Action) {
 	// Ctrl+C (ETX, byte 0x03) always quits. Raw mode disables ISIG, so it
 	// arrives as a literal byte instead of raising SIGINT.
 	if key.R == 3 {
@@ -57,8 +67,37 @@ func Dispatch(st UIState, key Key, currentCols int, allSections []string) (UISta
 		return st, ActionRedraw
 	}
 
+	// Esc: priority Detail → Sel → quit
 	if key.Esc {
+		if st.Detail {
+			st.Detail = false
+			return st, ActionRedraw
+		}
+		if st.Sel >= 0 {
+			st.Sel = -1
+			return st, ActionRedraw
+		}
 		return st, ActionQuit
+	}
+
+	// Arrow keys: up/left = previous selection (like 'b'); down/right = next (like 'n').
+	if key.Up || key.Left {
+		st.Sel--
+		if st.Sel < -1 {
+			st.Sel = -1
+		}
+		return st, ActionRedraw
+	}
+	if key.Down || key.Right {
+		if st.Sel < 0 {
+			st.Sel = 0
+		} else {
+			st.Sel++
+		}
+		if itemCount > 0 && st.Sel >= itemCount {
+			st.Sel = itemCount - 1
+		}
+		return st, ActionRedraw
 	}
 
 	switch key.R {
@@ -88,6 +127,8 @@ func Dispatch(st UIState, key Key, currentCols int, allSections []string) (UISta
 		return st, ActionRedraw
 	case '0', 'a':
 		st.Sections = nil
+		st.Sel = -1
+		st.Detail = false
 		return st, ActionRedraw
 	case 'f':
 		st.FillHeight = !st.FillHeight
@@ -112,6 +153,38 @@ func Dispatch(st UIState, key Key, currentCols int, allSections []string) (UISta
 			return st, ActionRefetch
 		}
 		return st, ActionNone
+	case 'n', 9: // n or Tab (0x09)
+		if st.Sel < 0 {
+			st.Sel = 0
+		} else {
+			st.Sel++
+		}
+		if itemCount > 0 && st.Sel >= itemCount {
+			st.Sel = itemCount - 1
+		}
+		return st, ActionRedraw
+	case 'b', 'N':
+		st.Sel--
+		if st.Sel < -1 {
+			st.Sel = -1
+		}
+		return st, ActionRedraw
+	case 13: // Enter
+		if st.Sel >= 0 {
+			st.Detail = !st.Detail
+		}
+		return st, ActionRedraw
+	case 'p':
+		st.Preset = (st.Preset + 1) % 3
+		switch st.Preset {
+		case 0:
+			st.Sections = nil
+		case 1:
+			st.Sections = []string{"japan", "us", "europe"}
+		case 2:
+			st.Sections = []string{"forex", "crypto"}
+		}
+		return st, ActionRedraw
 	}
 
 	// 1-9: section toggle
@@ -158,5 +231,7 @@ func (st UIState) applyTo(opt render.Options) render.Options {
 	}
 	opt.ForceCols = st.ForceCols
 	opt.FillHeight = st.FillHeight
+	opt.SelIndex = st.Sel
+	opt.DetailView = st.Detail
 	return opt
 }
