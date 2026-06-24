@@ -21,6 +21,30 @@ import (
 
 var version = "0.2.0"
 
+// normalizeArgs expands getopt-style short flags that glue a value to the flag
+// (e.g. "-w1" or "-sus") into the separate "-w 1" / "-s us" form that Go's flag
+// package understands. Only the value-taking short flags -s and -w are handled;
+// boolean flags like -j/-v and any long ("--watch") flags are passed through
+// unchanged. A "-w=1" form is left alone because flag already handles it.
+// The input slice is never mutated; a new slice is returned.
+func normalizeArgs(args []string) []string {
+	out := make([]string, 0, len(args))
+	for _, a := range args {
+		if len(a) > 2 && a[0] == '-' && a[1] != '-' {
+			c := a[1]
+			if c == 's' || c == 'w' {
+				rest := a[2:]
+				if rest[0] != '=' {
+					out = append(out, a[:2], rest)
+					continue
+				}
+			}
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
 const (
 	enterAlt  = "\033[?1049h"
 	leaveAlt  = "\033[?1049l"
@@ -112,7 +136,7 @@ func main() {
 	flag.StringVar(&rangeFlag, "range", "1d", "Time range (1d|5d|1mo|6mo|1y)")
 	flag.StringVar(&themeFlag, "theme", "default", "Color theme (default|mono|light|highcontrast)")
 	flag.StringVar(&configPath, "config", "", "Config file path")
-	flag.Parse()
+	flag.CommandLine.Parse(normalizeArgs(os.Args[1:]))
 
 	if showVersion {
 		fmt.Printf("kabuto %s\n", version)
