@@ -326,18 +326,31 @@ func main() {
 func runWatch(sec int, collect func() []string, sections []string, opt render.Options, rng fetcher.Range, sources []fetcher.Source) {
 	out := os.Stdout
 
+	fd := int(os.Stdin.Fd())
+
 	// Try to enter raw mode for interactive keys.
 	var rawState *term.State
-	rawState, _ = term.MakeRaw(int(os.Stdin.Fd()))
-	if rawState != nil {
+	rawState, _ = term.MakeRaw(fd)
+
+	// applyRawMode (re-)applies raw mode + the VMIN=0/VTIME=1 polling read.
+	// It is called once at startup and again on SIGCONT, because a stop
+	// (Ctrl-Z) or system suspend can leave the terminal in cooked mode.
+	applyRawMode := func() {
+		if rawState == nil {
+			return
+		}
+		// Re-enter raw mode (discard the returned "previous" state so the
+		// original captured at startup is preserved for the final Restore).
+		_, _ = term.MakeRaw(fd)
 		// Poll-style reads (VMIN=0/VTIME=1, ~0.1s) so the key reader can tell a
 		// lone ESC apart from the start of an arrow-key sequence.
-		_ = term.SetReadTimeout(int(os.Stdin.Fd()), 1)
+		_ = term.SetReadTimeout(fd, 1)
 	}
+	applyRawMode()
 
 	restore := func() {
 		if rawState != nil {
-			term.Restore(int(os.Stdin.Fd()), rawState)
+			term.Restore(fd, rawState)
 		}
 		fmt.Fprint(out, showCur+leaveAlt)
 	}
@@ -353,6 +366,9 @@ func runWatch(sec int, collect func() []string, sections []string, opt render.Op
 
 	// capture terminal resize (SIGWINCH on Unix, no-op elsewhere)
 	winCh := watchResizeChan()
+	// capture resume-from-stop (SIGCONT on Unix, no-op elsewhere) so we can
+	// re-apply raw mode after Ctrl-Z or a system suspend.
+	contCh := watchContChan()
 
 	fmt.Fprint(out, enterAlt+hideCur)
 	defer restore()
@@ -456,13 +472,48 @@ func runWatch(sec int, collect func() []string, sections []string, opt render.Op
 	// otherwise stdin is a pipe where a real EOF should close the reader.
 	go readKeys(os.Stdin, rawState != nil, keyCh)
 
-	// Initial fetch
+	// Asynchronous fetch plumbing. FetchAll can block for up to ~timeout*batches
+	// seconds (e.g. right after a system resume when the network is not yet
+	// back). Running it inline in the select loop would freeze the whole UI
+	// (keys, resize, quit) for that entire time. Instead we run each fetch in a
+	// goroutine and deliver the result over fetchDone, keeping the loop
+	// responsive. fetching guards against launching overlapping fetches.
+	type fetchResult struct {
+		data map[string]*fetcher.Result
+		rng  fetcher.Range
+	}
+	fetchDone := make(chan fetchResult, 1)
+	fetching := false
+	// lastFetch is tracked in wall-clock time (time.Now) rather than relying on
+	// a monotonic Ticker: a system suspend freezes the monotonic clock, so a
+	// Ticker would not fire to refresh stale data promptly after resume.
+	var lastFetch time.Time
+
+	startFetch := func() {
+		if fetching {
+			return
+		}
+		fetching = true
+		syms := collect()
+		rngNow := uiState.Range
+		go func() {
+			data := fetcher.FetchAll(syms, rngNow, sources...)
+			fetchDone <- fetchResult{data: data, rng: rngNow}
+		}()
+	}
+
+	// Initial fetch (synchronous so the first frame has data).
 	lastData = fetcher.FetchAll(collect(), uiState.Range, sources...)
 	recordHist(lastData)
+	lastFetch = time.Now()
 	draw()
 
-	ticker := time.NewTicker(time.Duration(sec) * time.Second)
-	defer ticker.Stop()
+	// A 1s poll drives wall-clock refresh checks. Unlike a NewTicker(sec) this
+	// keeps firing shortly after a resume so we can detect that `sec` seconds of
+	// real time have elapsed and refetch immediately.
+	poll := time.NewTicker(time.Second)
+	defer poll.Stop()
+	refreshInterval := time.Duration(sec) * time.Second
 	for {
 		select {
 		case key, ok := <-keyCh:
@@ -476,23 +527,34 @@ func runWatch(sec int, collect func() []string, sections []string, opt render.Op
 			case ActionQuit:
 				return
 			case ActionRefetch:
-				drawSections := sections
-				if uiState.Sections != nil {
-					drawSections = uiState.Sections
-				}
-				_ = drawSections
 				opt.RangeLabel = uiState.Range.String()
-				lastData = fetcher.FetchAll(collect(), uiState.Range, sources...)
-				recordHist(lastData)
+				startFetch()
 				draw()
 			default:
 				draw()
 			}
-		case <-ticker.C:
-			if !uiState.Paused {
-				lastData = fetcher.FetchAll(collect(), uiState.Range, sources...)
+		case res := <-fetchDone:
+			fetching = false
+			lastFetch = time.Now()
+			// Ignore results whose range no longer matches the active range
+			// (the user switched range while a fetch was in flight).
+			if res.rng == uiState.Range {
+				lastData = res.data
 				recordHist(lastData)
 			}
+			draw()
+		case <-poll.C:
+			// Wall-clock check: refetch when at least `sec` seconds of real time
+			// have elapsed since the last completed fetch. This fires promptly
+			// after a system resume even though the monotonic clock was frozen.
+			if !uiState.Paused && !fetching && time.Since(lastFetch) >= refreshInterval {
+				startFetch()
+			}
+		case <-contCh:
+			// Resumed after Ctrl-Z / suspend: the terminal may have been reset
+			// to cooked mode, so re-apply raw mode and redraw the alt screen.
+			fmt.Fprint(out, enterAlt+hideCur)
+			applyRawMode()
 			draw()
 		case <-winCh:
 			draw()

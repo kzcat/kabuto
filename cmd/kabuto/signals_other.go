@@ -8,3 +8,8 @@ import "os"
 func watchResizeChan() <-chan os.Signal {
 	return make(chan os.Signal, 1)
 }
+
+// watchContChan returns a no-op channel on non-Unix platforms (no SIGCONT).
+func watchContChan() <-chan os.Signal {
+	return make(chan os.Signal, 1)
+}
