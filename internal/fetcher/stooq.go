@@ -1,8 +1,10 @@
 package fetcher
 
 import (
+	"context"
 	"encoding/csv"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -30,7 +32,7 @@ type StooqSource struct{}
 
 func (s *StooqSource) Name() string { return "stooq" }
 
-func (s *StooqSource) Fetch(symbol string, rng Range, client *http.Client) (*Result, error) {
+func (s *StooqSource) Fetch(ctx context.Context, symbol string, rng Range, client *http.Client) (*Result, error) {
 	stooqSym, ok := stooqSymbolMap[symbol]
 	if !ok {
 		return nil, fmt.Errorf("stooq: unsupported symbol %s", symbol)
@@ -43,7 +45,7 @@ func (s *StooqSource) Fetch(symbol string, rng Range, client *http.Client) (*Res
 		u = fmt.Sprintf("https://stooq.com/q/l/?s=%s&f=sd2t2ohlcv&e=csv", stooqSym)
 	}
 
-	req, err := http.NewRequest("GET", u, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -75,30 +77,21 @@ func (s *StooqSource) Fetch(symbol string, rng Range, client *http.Client) (*Res
 	}
 	row := records[1]
 
-	getFloat := func(name string) float64 {
-		idx, ok := colIdx[name]
-		if !ok || idx >= len(row) {
-			return 0
-		}
-		v, _ := strconv.ParseFloat(strings.TrimSpace(row[idx]), 64)
-		return v
+	idx, ok := colIdx["close"]
+	if !ok || idx >= len(row) {
+		return nil, fmt.Errorf("stooq: missing close column for %s", symbol)
+	}
+	price, err := strconv.ParseFloat(strings.TrimSpace(row[idx]), 64)
+	if err != nil || math.IsNaN(price) || math.IsInf(price, 0) {
+		return nil, fmt.Errorf("stooq: invalid close %q for %s", row[idx], symbol)
 	}
 
-	open := getFloat("open")
-	close_ := getFloat("close")
-
-	change := close_ - open
-	var pct float64
-	if open != 0 {
-		pct = change / open * 100
-	}
-
+	// This quote endpoint supplies neither the previous trading day's close
+	// nor a history for rng. Do not substitute the open or invent a series.
 	return &Result{
-		Price:     close_,
-		PrevClose: open,
-		Change:    change,
-		ChangePct: pct,
-		Series:    []float64{open, close_},
-		Currency:  "",
+		Price:              price,
+		Source:             s.Name(),
+		ChangeUnavailable:  true,
+		HistoryUnavailable: true,
 	}, nil
 }

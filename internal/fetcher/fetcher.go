@@ -1,10 +1,8 @@
 package fetcher
 
 import (
-	"encoding/json"
-	"fmt"
+	"context"
 	"net/http"
-	"net/url"
 	"sync"
 	"time"
 )
@@ -15,32 +13,25 @@ const (
 	maxWorkers = 8
 )
 
-var baseURLs = []string{
-	"https://query2.finance.yahoo.com/v8/finance/chart/%s?interval=5m&range=1d",
-	"https://query1.finance.yahoo.com/v8/finance/chart/%s?interval=5m&range=1d",
-}
-
 // Result holds the fetch result for a single symbol.
 type Result struct {
-	Price     float64
-	PrevClose float64
-	Change    float64
-	ChangePct float64
-	Time      string
-	Epoch     int64     // regularMarketTime epoch seconds
-	Series    []float64 // intraday close series (nulls interpolated with previous value)
-	Currency  string    // meta.currency from Yahoo
+	Price              float64
+	PrevClose          float64
+	Change             float64
+	ChangePct          float64
+	Time               string
+	Epoch              int64     // regularMarketTime epoch seconds
+	Series             []float64 // intraday close series (nulls interpolated with previous value)
+	Currency           string    // meta.currency from Yahoo
+	Source             string    // source that actually supplied this quote
+	FetchedAt          time.Time // last successful retrieval, not the market timestamp
+	Stale              bool      // a failed refresh returned an expired cache entry
+	ChangeUnavailable  bool      // the source did not supply a previous close
+	HistoryUnavailable bool      // the source does not supply the requested history
 }
 
 // BaseURLOverride is a hook to replace URLs for testing.
 var BaseURLOverride []string
-
-func getBaseURLs() []string {
-	if BaseURLOverride != nil {
-		return BaseURLOverride
-	}
-	return baseURLs
-}
 
 type chartResponse struct {
 	Chart struct {
@@ -77,113 +68,74 @@ func buildSeries(raw []*float64, fallback float64) []float64 {
 }
 
 func fetchOne(symbol string, client *http.Client) *Result {
-	encoded := url.PathEscape(symbol)
-	for _, urlTpl := range getBaseURLs() {
-		u := fmt.Sprintf(urlTpl, encoded)
-		req, err := http.NewRequest("GET", u, nil)
-		if err != nil {
-			continue
-		}
-		req.Header.Set("User-Agent", userAgent)
-		resp, err := client.Do(req)
-		if err != nil {
-			continue
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != 200 {
-			continue
-		}
-		var cr chartResponse
-		if err := json.NewDecoder(resp.Body).Decode(&cr); err != nil {
-			continue
-		}
-		if len(cr.Chart.Result) == 0 {
-			continue
-		}
-		meta := cr.Chart.Result[0].Meta
-		change := meta.RegularMarketPrice - meta.ChartPreviousClose
-		var pct float64
-		if meta.ChartPreviousClose != 0 {
-			pct = change / meta.ChartPreviousClose * 100
-		}
-		t := time.Unix(meta.RegularMarketTime, 0).In(time.Local)
-		var series []float64
-		if len(cr.Chart.Result[0].Indicators.Quote) > 0 {
-			series = buildSeries(cr.Chart.Result[0].Indicators.Quote[0].Close, meta.ChartPreviousClose)
-		}
-		return &Result{
-			Price:     meta.RegularMarketPrice,
-			PrevClose: meta.ChartPreviousClose,
-			Change:    change,
-			ChangePct: pct,
-			Time:      t.Format("15:04"),
-			Epoch:     meta.RegularMarketTime,
-			Series:    series,
-			Currency:  meta.Currency,
-		}
-	}
-	return nil
+	r, _ := (&YahooSource{}).Fetch(context.Background(), symbol, Range1D, client)
+	return r
 }
 
-// FetchAll fetches multiple symbols in parallel (Range-aware, Source-aware).
+// FetchAll fetches multiple symbols in parallel using the requested source policy.
 func FetchAll(symbols []string, rng Range, sources ...Source) map[string]*Result {
+	return FetchAllContext(context.Background(), symbols, rng, sources...)
+}
+
+// FetchAllContext cancels both active HTTP requests and queued work with ctx.
+func FetchAllContext(ctx context.Context, symbols []string, rng Range, sources ...Source) map[string]*Result {
+	if len(sources) == 0 {
+		sources = []Source{&YahooSource{}}
+	}
 	client := &http.Client{Timeout: timeout}
 	results := make(map[string]*Result)
 	var mu sync.Mutex
 	sem := make(chan struct{}, maxWorkers)
 	var wg sync.WaitGroup
-
-	// Disable cache when BaseURLOverride is set (test mode)
 	useCache := BaseURLOverride == nil
 
-	for _, s := range symbols {
+schedule:
+	for _, symbol := range symbols {
+		if ctx.Err() != nil {
+			break
+		}
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			break schedule
+		}
 		wg.Add(1)
-		sem <- struct{}{}
 		go func(symbol string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-
 			var r *Result
-
-			// Check cache first
 			if useCache {
-				if cached, fresh := cacheGet(symbol, rng); fresh && cached != nil {
-					mu.Lock()
-					results[symbol] = cached
-					mu.Unlock()
-					return
-				}
-			}
-
-			if len(sources) > 0 {
-				for _, src := range sources {
-					res, err := src.Fetch(symbol, rng, client)
-					if err == nil && res != nil {
-						r = res
-						break
-					}
-				}
-			} else {
-				// Legacy path: use fetchOne (for backward compat with existing tests)
-				r = fetchOne(symbol, client)
-			}
-
-			// On failure, try stale cache
-			if r == nil && useCache {
-				if cached, _ := cacheGet(symbol, rng); cached != nil {
+				if cached, fresh := cacheGet(symbol, rng, sources...); fresh {
 					r = cached
 				}
 			}
-
-			// Update cache on success
-			if r != nil && useCache {
-				cacheSet(symbol, rng, r)
+			if r == nil {
+				for _, src := range sources {
+					if ctx.Err() != nil {
+						return
+					}
+					res, err := src.Fetch(ctx, symbol, rng, client)
+					if err == nil && res != nil {
+						copy := *res
+						r = &copy
+						r.Source = src.Name()
+						r.FetchedAt = time.Now()
+						r.Stale = false
+						// Only a successful retrieval can renew the cache.
+						if useCache && ctx.Err() == nil {
+							cacheSet(symbol, rng, r, sources...)
+						}
+						break
+					}
+				}
+				if r == nil && useCache && ctx.Err() == nil {
+					r, _ = cacheGet(symbol, rng, sources...)
+				}
 			}
-
 			mu.Lock()
 			results[symbol] = r
 			mu.Unlock()
-		}(s)
+		}(symbol)
 	}
 	wg.Wait()
 	return results

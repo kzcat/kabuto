@@ -1,6 +1,7 @@
 package fetcher
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -13,11 +14,14 @@ type YahooSource struct{}
 
 func (y *YahooSource) Name() string { return "yahoo" }
 
-func (y *YahooSource) Fetch(symbol string, rng Range, client *http.Client) (*Result, error) {
+func (y *YahooSource) Fetch(ctx context.Context, symbol string, rng Range, client *http.Client) (*Result, error) {
 	encoded := url.PathEscape(symbol)
 	urls := yahooURLs(encoded, rng)
 	for _, u := range urls {
-		req, err := http.NewRequest("GET", u, nil)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
 		if err != nil {
 			continue
 		}
@@ -26,12 +30,14 @@ func (y *YahooSource) Fetch(symbol string, rng Range, client *http.Client) (*Res
 		if err != nil {
 			continue
 		}
-		defer resp.Body.Close()
 		if resp.StatusCode != 200 {
+			resp.Body.Close()
 			continue
 		}
 		var cr chartResponse
-		if err := json.NewDecoder(resp.Body).Decode(&cr); err != nil {
+		err = json.NewDecoder(resp.Body).Decode(&cr)
+		resp.Body.Close()
+		if err != nil {
 			continue
 		}
 		if len(cr.Chart.Result) == 0 {
@@ -57,6 +63,7 @@ func (y *YahooSource) Fetch(symbol string, rng Range, client *http.Client) (*Res
 			Epoch:     meta.RegularMarketTime,
 			Series:    series,
 			Currency:  meta.Currency,
+			Source:    y.Name(),
 		}, nil
 	}
 	return nil, fmt.Errorf("yahoo: all URLs failed for %s", symbol)

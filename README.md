@@ -84,7 +84,7 @@ kabuto --tz America/New_York
 kabuto --country JP
 
 # Add ad-hoc symbols to watchlist
-kabuto --add AAPL --add TSLA:USD:2
+kabuto --add AAPL --add TSLA:US:2
 
 # Use a specific data source
 kabuto --source stooq
@@ -123,6 +123,48 @@ kabuto -v
 The home market section is auto-detected from `$LC_ALL` / `$LANG`
 (falling back to US) and moved to the front.
 
+## Data sources and cache
+
+`auto` tries Yahoo first, then Stooq for supported indices. The current Stooq
+integration provides a quote only: the previous close and percentage change are
+shown as `N/A`, and charts show `History N/A` for every range. Use `--source yahoo`
+for history. Missing or invalid source prices are treated as failed fetches.
+
+Successful results are cached for 60 seconds, separately for each symbol, range,
+and source policy. If a refresh fails, an expired quote may be displayed with a
+`STALE` marker. Its original retrieval time is preserved, and subsequent refreshes
+retry the source. The detail view shows the actual source and retrieval time.
+
+JSON items include `source`, `fetched_at` (RFC 3339), `stale`, `prev_close`, and
+`history_available` alongside the existing fields. Unavailable changes and market
+timestamps are `null`; unsupported history is an empty `series` with
+`history_available: false`. `fetched_at` is the successful retrieval time;
+`epoch` is the market timestamp, when available.
+
+## Custom sections
+
+Sections from a config file can be selected with `-s` after registration:
+
+```json
+{
+  "sections": [
+    {
+      "key": "stocks",
+      "title": "My Stocks",
+      "items": [{"symbol": "AAPL", "country": "US", "decimals": 2}]
+    }
+  ]
+}
+```
+
+```bash
+kabuto --config ./config.json -s stocks
+kabuto --add AAPL -s watch
+```
+
+Without `-s`, custom sections are included in the dashboard. `section_order` in
+the config can set their position.
+
 ## Themes
 
 Built-in color themes set the up/down colors and the chart gradient.
@@ -146,6 +188,10 @@ top of any theme.
 | `Enter` | Detail view (toggle) | `p` | Layout preset cycle |
 | `Esc` | Back (detail → select → quit) | | |
 
+Watch mode shows a loading frame immediately. `q`, `Esc`, or Ctrl+C can quit
+while a fetch is pending; changing ranges with `[` / `]` cancels the old request
+and starts the new one immediately.
+
 ## Sections
 
 `japan` · `us` · `us-futures` · `europe` · `asia` · `mideast-america` · `forex` · `crypto` · `commodity`
@@ -161,7 +207,8 @@ go build -o kabuto ./cmd/kabuto
 ## Test
 
 ```bash
-go test ./...
+go test -race ./...
+go vet ./...
 ```
 
 ## License

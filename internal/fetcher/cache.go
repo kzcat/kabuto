@@ -30,17 +30,26 @@ func cacheDir() string {
 	return filepath.Join(dir, "kabuto")
 }
 
-func cacheKey(symbol string, rng Range) string {
-	h := sha256.Sum256([]byte(symbol + "|" + rng.String()))
+func cacheKey(symbol string, rng Range, sources ...Source) string {
+	if len(sources) == 0 {
+		sources = []Source{&YahooSource{}}
+	}
+	names := make([]string, len(sources))
+	for i, src := range sources {
+		names[i] = src.Name()
+	}
+	// Version the namespace to exclude legacy entries with incorrect semantics.
+	key, _ := json.Marshal([]any{"v2", symbol, rng.String(), names})
+	h := sha256.Sum256(key)
 	return hex.EncodeToString(h[:8])
 }
 
-func cacheGet(symbol string, rng Range) (*Result, bool) {
+func cacheGet(symbol string, rng Range, sources ...Source) (*Result, bool) {
 	dir := cacheDir()
 	if dir == "" {
 		return nil, false
 	}
-	path := filepath.Join(dir, cacheKey(symbol, rng)+".json")
+	path := filepath.Join(dir, cacheKey(symbol, rng, sources...)+".json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, false
@@ -49,21 +58,42 @@ func cacheGet(symbol string, rng Range) (*Result, bool) {
 	if err := json.Unmarshal(data, &entry); err != nil {
 		return nil, false
 	}
-	fresh := time.Since(entry.Timestamp) < cacheTTL
+	if entry.Result == nil {
+		return nil, false
+	}
+	age := time.Since(entry.Timestamp)
+	fresh := age >= 0 && age < cacheTTL
+	entry.Result.FetchedAt = entry.Timestamp
+	entry.Result.Stale = !fresh
 	return entry.Result, fresh
 }
 
-func cacheSet(symbol string, rng Range, r *Result) {
+func cacheSet(symbol string, rng Range, r *Result, sources ...Source) {
 	dir := cacheDir()
 	if dir == "" {
 		return
 	}
-	_ = os.MkdirAll(dir, 0o755)
-	entry := cacheEntry{Result: r, Timestamp: time.Now()}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
+	}
+	stamp := r.FetchedAt
+	if stamp.IsZero() {
+		stamp = time.Now()
+	}
+	entry := cacheEntry{Result: r, Timestamp: stamp}
 	data, err := json.Marshal(entry)
 	if err != nil {
 		return
 	}
-	path := filepath.Join(dir, cacheKey(symbol, rng)+".json")
-	_ = os.WriteFile(path, data, 0o644)
+	path := filepath.Join(dir, cacheKey(symbol, rng, sources...)+".json")
+	file, err := os.CreateTemp(dir, ".cache-*")
+	if err != nil {
+		return
+	}
+	defer os.Remove(file.Name())
+	_, writeErr := file.Write(data)
+	closeErr := file.Close()
+	if writeErr == nil && closeErr == nil {
+		_ = os.Rename(file.Name(), path)
+	}
 }

@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -59,14 +61,22 @@ type sectionFlag []string
 
 func (s *sectionFlag) String() string { return strings.Join(*s, ",") }
 func (s *sectionFlag) Set(v string) error {
-	valid := map[string]bool{}
-	for _, k := range symbols.SectionOrder {
-		valid[k] = true
-	}
-	if !valid[v] {
-		return fmt.Errorf("invalid section: %s (valid: %s)", v, strings.Join(symbols.SectionOrder, ", "))
-	}
 	*s = append(*s, v)
+	return nil
+}
+
+// Validate after config and --add have registered their sections.
+func (s sectionFlag) Validate() error {
+	for _, key := range s {
+		if _, ok := symbols.Sections[key]; !ok {
+			valid := make([]string, 0, len(symbols.Sections))
+			for k := range symbols.Sections {
+				valid = append(valid, k)
+			}
+			sort.Strings(valid)
+			return fmt.Errorf("invalid section: %s (valid: %s)", key, strings.Join(valid, ", "))
+		}
+	}
 	return nil
 }
 
@@ -195,6 +205,11 @@ func main() {
 		symbols.RegisterSection(symbols.Section{Key: "watch", Title: "Watchlist", Items: items})
 	}
 
+	if err := sections.Validate(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+
 	if jsonOut {
 		noColor = true
 	}
@@ -220,6 +235,21 @@ func main() {
 	order := symbols.SectionOrder
 	if !explicit {
 		order = locale.HomeFirstOrder(cc)
+	}
+
+	// Include newly registered config sections in the default dashboard.
+	if !explicit {
+		order = append([]string(nil), order...)
+		seen := map[string]bool{}
+		for _, key := range order {
+			seen[key] = true
+		}
+		for _, sec := range cfg.Sections {
+			if !seen[sec.Key] && sec.Key != "watch" {
+				order = append(order, sec.Key)
+				seen[sec.Key] = true
+			}
+		}
 	}
 
 	// Apply config section_order if -s not given
@@ -324,6 +354,8 @@ func main() {
 
 // runWatch is the flicker-free auto-refresh loop with interactive key handling.
 func runWatch(sec int, collect func() []string, sections []string, opt render.Options, rng fetcher.Range, sources []fetcher.Source) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	out := os.Stdout
 
 	fd := int(os.Stdin.Fd())
@@ -358,11 +390,7 @@ func runWatch(sec int, collect func() []string, sections []string, opt render.Op
 	// restore screen and exit on SIGINT/SIGTERM
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-sigCh
-		restore()
-		os.Exit(0)
-	}()
+	defer signal.Stop(sigCh)
 
 	// capture terminal resize (SIGWINCH on Unix, no-op elsewhere)
 	winCh := watchResizeChan()
@@ -422,7 +450,7 @@ func runWatch(sec int, collect func() []string, sections []string, opt render.Op
 		}
 		if !histInit {
 			for sym, r := range data {
-				if r != nil {
+				if r != nil && !r.Stale && !r.HistoryUnavailable {
 					hist[sym] = seedHist(r.Series, histLimit)
 				}
 			}
@@ -430,7 +458,7 @@ func runWatch(sec int, collect func() []string, sections []string, opt render.Op
 			return
 		}
 		for sym, r := range data {
-			if r != nil {
+			if r != nil && !r.Stale && !r.HistoryUnavailable {
 				hist[sym] = appendHist(hist[sym], r.Price, histLimit)
 			}
 		}
@@ -442,6 +470,7 @@ func runWatch(sec int, collect func() []string, sections []string, opt render.Op
 		o.TermWidth = cols
 		o.TermRows = rows
 		o.Watch = true
+		o.Loading = lastData == nil
 		// B7: only feed rolling history to the renderer for the 1d range.
 		if uiState.Range == fetcher.Range1D {
 			o.History = hist
@@ -481,6 +510,7 @@ func runWatch(sec int, collect func() []string, sections []string, opt render.Op
 	type fetchResult struct {
 		data map[string]*fetcher.Result
 		rng  fetcher.Range
+		id   uint64
 	}
 	fetchDone := make(chan fetchResult, 1)
 	fetching := false
@@ -489,23 +519,36 @@ func runWatch(sec int, collect func() []string, sections []string, opt render.Op
 	// Ticker would not fire to refresh stale data promptly after resume.
 	var lastFetch time.Time
 
+	var fetchID uint64
+	var activeRange fetcher.Range
+	var cancelFetch context.CancelFunc
 	startFetch := func() {
 		if fetching {
-			return
+			if activeRange == uiState.Range {
+				return
+			}
+			cancelFetch()
 		}
 		fetching = true
+		fetchID++
+		id := fetchID
 		syms := collect()
 		rngNow := uiState.Range
+		activeRange = rngNow
+		requestCtx, stop := context.WithCancel(ctx)
+		cancelFetch = stop
 		go func() {
-			data := fetcher.FetchAll(syms, rngNow, sources...)
-			fetchDone <- fetchResult{data: data, rng: rngNow}
+			defer stop()
+			data := fetcher.FetchAllContext(requestCtx, syms, rngNow, sources...)
+			select {
+			case fetchDone <- fetchResult{data: data, rng: rngNow, id: id}:
+			case <-requestCtx.Done():
+			}
 		}()
 	}
 
-	// Initial fetch (synchronous so the first frame has data).
-	lastData = fetcher.FetchAll(collect(), uiState.Range, sources...)
-	recordHist(lastData)
-	lastFetch = time.Now()
+	// Draw immediately and process keys while the initial request is pending.
+	startFetch()
 	draw()
 
 	// A 1s poll drives wall-clock refresh checks. Unlike a NewTicker(sec) this
@@ -516,13 +559,21 @@ func runWatch(sec int, collect func() []string, sections []string, opt render.Op
 	refreshInterval := time.Duration(sec) * time.Second
 	for {
 		select {
+		case <-sigCh:
+			return
 		case key, ok := <-keyCh:
 			if !ok {
 				// stdin closed (EOF)
 				return
 			}
+			previousRange := uiState.Range
 			newState, action := Dispatch(uiState, key, lastCols, sections, uiState.MaxCols)
 			uiState = newState
+			if uiState.Range != previousRange {
+				lastData = nil
+				hist = map[string][]float64{}
+				histInit = false
+			}
 			switch action {
 			case ActionQuit:
 				return
@@ -534,8 +585,11 @@ func runWatch(sec int, collect func() []string, sections []string, opt render.Op
 				draw()
 			}
 		case res := <-fetchDone:
+			if res.id != fetchID {
+				continue
+			}
 			fetching = false
-			lastFetch = time.Now()
+			lastFetch = time.Now().Round(0) // discard monotonic time for suspend/resume checks
 			// Ignore results whose range no longer matches the active range
 			// (the user switched range while a fetch was in flight).
 			if res.rng == uiState.Range {

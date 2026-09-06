@@ -1,6 +1,7 @@
 package fetcher
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -41,7 +42,7 @@ func TestYahooSourceFetch(t *testing.T) {
 	defer func() { BaseURLOverride = nil }()
 
 	src := &YahooSource{}
-	r, err := src.Fetch("^N225", Range1D, &http.Client{})
+	r, err := src.Fetch(context.Background(), "^N225", Range1D, &http.Client{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,24 +118,24 @@ func TestStooqSourceFetch(t *testing.T) {
 	defer func() { StooqBaseURLOverride = "" }()
 
 	src := &StooqSource{}
-	r, err := src.Fetch("^DJI", Range1D, &http.Client{})
+	r, err := src.Fetch(context.Background(), "^DJI", Range1D, &http.Client{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if r.Price != 39500.0 {
 		t.Errorf("price: got %f, want 39500.0", r.Price)
 	}
-	if r.PrevClose != 39000.0 {
-		t.Errorf("prevclose: got %f, want 39000.0", r.PrevClose)
+	if !r.ChangeUnavailable || r.PrevClose != 0 || r.Change != 0 {
+		t.Errorf("quote without previous close must not report a change: %+v", r)
 	}
-	if r.Change != 500.0 {
-		t.Errorf("change: got %f, want 500.0", r.Change)
+	if !r.HistoryUnavailable || len(r.Series) != 0 {
+		t.Errorf("quote endpoint must not invent history: %+v", r)
 	}
 }
 
 func TestStooqSourceUnsupported(t *testing.T) {
 	src := &StooqSource{}
-	_, err := src.Fetch("UNKNOWN", Range1D, &http.Client{})
+	_, err := src.Fetch(context.Background(), "UNKNOWN", Range1D, &http.Client{})
 	if err == nil {
 		t.Fatal("expected error for unsupported symbol")
 	}
