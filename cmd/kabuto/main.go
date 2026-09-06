@@ -21,7 +21,7 @@ import (
 	"github.com/kzcat/kabuto/internal/term"
 )
 
-var version = "0.3.1"
+var version = "0.3.2"
 
 // normalizeArgs expands getopt-style short flags that glue a value to the flag
 // (e.g. "-w1" or "-sus") into the separate "-w 1" / "-s us" form that Go's flag
