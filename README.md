@@ -130,6 +130,11 @@ integration provides a quote only: the previous close and percentage change are
 shown as `N/A`, and charts show `History N/A` for every range. Use `--source yahoo`
 for history. Missing or invalid source prices are treated as failed fetches.
 
+On the 1d range, the Nikkei 225 futures (`NKD=F`) change and previous close are
+computed against the Nikkei 225 (`^N225`) previous close rather than the CME
+settlement, so the futures tile shares the index tile's baseline. If the index
+previous close is unavailable, the CME settlement is used.
+
 Successful results are cached for 60 seconds, separately for each symbol, range,
 and source policy. If a refresh fails, an expired quote may be displayed with a
 `STALE` marker. Its original retrieval time is preserved, and subsequent refreshes

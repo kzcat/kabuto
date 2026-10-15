@@ -82,6 +82,11 @@ func FetchAllContext(ctx context.Context, symbols []string, rng Range, sources .
 	if len(sources) == 0 {
 		sources = []Source{&YahooSource{}}
 	}
+	// Change bases only redefine the previous close, so they apply to 1d only.
+	var helpers map[string]bool
+	if rng == Range1D {
+		symbols, helpers = withChangeBases(symbols)
+	}
 	client := &http.Client{Timeout: timeout}
 	results := make(map[string]*Result)
 	var mu sync.Mutex
@@ -138,5 +143,12 @@ schedule:
 		}(symbol)
 	}
 	wg.Wait()
+	if rng == Range1D {
+		applyChangeBases(results)
+	}
+	// Drop base symbols that were fetched only to rebase another symbol.
+	for sym := range helpers {
+		delete(results, sym)
+	}
 	return results
 }
