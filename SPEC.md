@@ -18,7 +18,8 @@
   - レスポンスの `chart.result[0].meta` から `regularMarketPrice` / `chartPreviousClose` / `regularMarketTime` を取得
   - **User-Agent は素の `Mozilla/5.0` 固定**(検証済みの重要な知見: ブラウザ完全偽装 UA・curl UA・Go デフォルト UA は Yahoo 側で 429 になる。素の `Mozilla/5.0` のみ通る)
   - シンボルは URL エンコードすること(`^N225` → `%5EN225`、`NKD=F` → `NKD%3DF`)
-  - **日経先物の前日比基準**: 1d レンジでは `NKD=F` の前日比・前日比%・前日終値を CME の前日清算値ではなく `^N225` の `chartPreviousClose`(日経平均の前日終値)基準で再計算する(本サイトの「日経時間外」と同じ基準。日経平均タイルと同じ基準線になる)。`^N225` が取得対象外でも補助的に取得し、結果からは除く。`^N225` の前日終値が得られない場合は CME 清算値基準のまま。5d 以上のレンジは各銘柄自身のレンジ開始値基準
+  - **日経先物・日経時間外の前日比基準**: 1d レンジでは `NKD=F` と `hl:xyz:JP225` の前日比・前日比%・前日終値を CME の前日清算値ではなく `^N225` の `chartPreviousClose`(日経平均の前日終値)基準で再計算する(本サイトの「日経時間外」と同じ基準。日経平均タイルと同じ基準線になる)。`^N225` が取得対象外でも補助的に取得し、結果からは除く。`^N225` の前日終値が得られない場合は各銘柄自身の基準(CME 清算値 / 24時間前)のまま。5d 以上のレンジは各銘柄自身のレンジ開始値基準
+  - **HyperLiquid(`hl:<dex>:<coin>` シンボル)**: `https://api.hyperliquid.xyz/info` に POST。価格は `metaAndAssetCtxs`(`dex` 指定)の `oraclePx`、チャートは `candleSnapshot` の終値(1d=直近24時間の5分足 / 5d=15分足 / 1mo・6mo=日足 / 1y=週足)。前日比の基準は 1d が `prevDayPx`(24時間前)、それ以外は期間先頭の始値。`hl:` シンボルは `--source` に関係なく HyperLiquid から取得する。日経時間外 `hl:xyz:JP225` は本サイトの「日経時間外」とほぼ一致する(oracle は現物指数相当で、先物との価格差を含まない)
   - 取得は goroutine で並列化(セマフォ等で同時 8 接続程度に制限)
   - 取得失敗した銘柄は `N/A` 表示で続行(全体を落とさない)
 
@@ -26,7 +27,7 @@
 
 | セクション | 銘柄 (Yahoo シンボル) [国コード] |
 |---|---|
-| 日本 | 日経平均 `^N225` [JP] / 日経先物(CME) `NKD=F` [JP] / TOPIX(ETF) `1306.T` [JP] / グロース250(ETF) `2516.T` [JP] / ドル円 `USDJPY=X` [JP] |
+| 日本 | 日経平均 `^N225` [JP] / 日経時間外 `hl:xyz:JP225` [JP] / 日経先物(CME) `NKD=F` [JP] / TOPIX(ETF) `1306.T` [JP] / グロース250(ETF) `2516.T` [JP] / ドル円 `USDJPY=X` [JP] |
 | 米国 | NYダウ `^DJI` / S&P500 `^GSPC` / NASDAQ `^IXIC` / SOX `^SOX` / FANG+ `^NYFANG` / VIX `^VIX` / 米10年債利回り `^TNX`(すべて [US]) |
 | 米国先物 | ダウ先物 `YM=F` / S&P先物 `ES=F` / NASDAQ先物 `NQ=F`(すべて [US]) |
 | 欧州 | FTSE100 `^FTSE` [GB] / DAX `^GDAXI` [DE] / CAC40 `^FCHI` [FR] / ユーロストックス50 `^STOXX50E` [EU] / スイスSMI `^SSMI` [CH] / イタリアMIB `FTSEMIB.MI` [IT] / ロシアMOEX `IMOEX.ME` [RU] |

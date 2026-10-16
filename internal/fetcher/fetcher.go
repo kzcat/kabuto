@@ -92,7 +92,7 @@ func FetchAllContext(ctx context.Context, symbols []string, rng Range, sources .
 	var mu sync.Mutex
 	sem := make(chan struct{}, maxWorkers)
 	var wg sync.WaitGroup
-	useCache := BaseURLOverride == nil
+	useCache := BaseURLOverride == nil && HyperliquidURLOverride == ""
 
 schedule:
 	for _, symbol := range symbols {
@@ -108,6 +108,7 @@ schedule:
 		go func(symbol string) {
 			defer wg.Done()
 			defer func() { <-sem }()
+			sources := sourcesFor(symbol, sources)
 			var r *Result
 			if useCache {
 				if cached, fresh := cacheGet(symbol, rng, sources...); fresh {

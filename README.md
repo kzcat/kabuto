@@ -130,10 +130,16 @@ integration provides a quote only: the previous close and percentage change are
 shown as `N/A`, and charts show `History N/A` for every range. Use `--source yahoo`
 for history. Missing or invalid source prices are treated as failed fetches.
 
-On the 1d range, the Nikkei 225 futures (`NKD=F`) change and previous close are
-computed against the Nikkei 225 (`^N225`) previous close rather than the CME
-settlement, so the futures tile shares the index tile's baseline. If the index
-previous close is unavailable, the CME settlement is used.
+Nikkei After Hours (`hl:xyz:JP225`) is the oracle price of HyperLiquid's JP225
+perpetual, which trades around the clock and tracks the cash index. `hl:`
+symbols are always fetched from HyperLiquid, regardless of `--source`; the chart
+uses its trade candles.
+
+On the 1d range, the Nikkei 225 futures (`NKD=F`) and Nikkei After Hours change
+and previous close are computed against the Nikkei 225 (`^N225`) previous close
+rather than the CME settlement or the price 24 hours ago, so these tiles share
+the index tile's baseline. If the index previous close is unavailable, their own
+base is used.
 
 Successful results are cached for 60 seconds, separately for each symbol, range,
 and source policy. If a refresh fails, an expired quote may be displayed with a

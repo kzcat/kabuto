@@ -342,6 +342,8 @@ var symbolCatalog = map[string]map[string]string{
 		"CL=F":       "Crude Oil WTI",
 		"SI=F":       "Silver",
 		"NG=F":       "Natural Gas",
+
+		"hl:xyz:JP225": "Nikkei After Hours",
 	},
 	"ja": {
 		"^N225":      "日経平均",
@@ -395,6 +397,8 @@ var symbolCatalog = map[string]map[string]string{
 		"CL=F":       "NY原油WTI",
 		"SI=F":       "NY銀",
 		"NG=F":       "天然ガス",
+
+		"hl:xyz:JP225": "日経時間外",
 	},
 	"zh": {
 		"^N225":      "日经225",
@@ -448,6 +452,8 @@ var symbolCatalog = map[string]map[string]string{
 		"CL=F":       "WTI原油",
 		"SI=F":       "白银",
 		"NG=F":       "天然气",
+
+		"hl:xyz:JP225": "日经盘后",
 	},
 	"ko": {
 		"^N225":      "닛케이225",
@@ -501,6 +507,8 @@ var symbolCatalog = map[string]map[string]string{
 		"CL=F":       "WTI 원유",
 		"SI=F":       "은",
 		"NG=F":       "천연가스",
+
+		"hl:xyz:JP225": "닛케이 시간외",
 	},
 	"de": {
 		"^N225":      "Nikkei 225",
@@ -554,6 +562,8 @@ var symbolCatalog = map[string]map[string]string{
 		"CL=F":       "Rohöl WTI",
 		"SI=F":       "Silber",
 		"NG=F":       "Erdgas",
+
+		"hl:xyz:JP225": "Nikkei nachbörslich",
 	},
 	"fr": {
 		"^N225":      "Nikkei 225",
@@ -607,6 +617,8 @@ var symbolCatalog = map[string]map[string]string{
 		"CL=F":       "Pétrole brut WTI",
 		"SI=F":       "Argent",
 		"NG=F":       "Gaz naturel",
+
+		"hl:xyz:JP225": "Nikkei hors séance",
 	},
 	"es": {
 		"^N225":      "Nikkei 225",
@@ -660,5 +672,7 @@ var symbolCatalog = map[string]map[string]string{
 		"CL=F":       "Petróleo crudo WTI",
 		"SI=F":       "Plata",
 		"NG=F":       "Gas natural",
+
+		"hl:xyz:JP225": "Nikkei fuera de hora",
 	},
 }

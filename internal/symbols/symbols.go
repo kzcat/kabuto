@@ -43,6 +43,7 @@ func RegisterSection(sec Section) {
 var Sections = map[string]Section{
 	"japan": {Key: "japan", Title: "Japan", Items: []Item{
 		{"Nikkei 225", "^N225", 2, "JP"},
+		{"Nikkei After Hours", "hl:xyz:JP225", 0, "JP"},
 		{"Nikkei 225 Futures (CME)", "NKD=F", 2, "JP"},
 		{"TOPIX (ETF)", "1306.T", 2, "JP"},
 		{"Growth 250 (ETF)", "2516.T", 2, "JP"},

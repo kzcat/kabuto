@@ -7,7 +7,7 @@ import (
 	"github.com/kzcat/kabuto/internal/symbols"
 )
 
-// TestSymbolCatalogCoverage verifies that all 51 symbols x 7 languages are covered.
+// TestSymbolCatalogCoverage verifies that all 52 symbols x 7 languages are covered.
 func TestSymbolCatalogCoverage(t *testing.T) {
 	// Collect all symbols from sections.
 	var allSyms []string
@@ -17,8 +17,8 @@ func TestSymbolCatalogCoverage(t *testing.T) {
 			allSyms = append(allSyms, item.Symbol)
 		}
 	}
-	if len(allSyms) != 51 {
-		t.Fatalf("expected 51 symbols, got %d", len(allSyms))
+	if len(allSyms) != 52 {
+		t.Fatalf("expected 52 symbols, got %d", len(allSyms))
 	}
 
 	for _, lang := range Supported {

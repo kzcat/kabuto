@@ -1,11 +1,13 @@
 package fetcher
 
 // changeBaseSymbols maps a symbol to the symbol whose previous close is used as
-// its 1d change base. Nikkei futures are compared against the Nikkei 225 cash
-// previous close rather than the CME settlement (as Japanese market sites do
-// for "日経時間外"), so the futures and index tiles share the same baseline.
+// its 1d change base. Nikkei futures and the after-hours JP225 perpetual are
+// compared against the Nikkei 225 cash previous close rather than the CME
+// settlement or the price 24h ago (as Japanese market sites do for "日経時間外"),
+// so they share the index tile's baseline.
 var changeBaseSymbols = map[string]string{
-	"NKD=F": "^N225",
+	"NKD=F":        "^N225",
+	"hl:xyz:JP225": "^N225",
 }
 
 // withChangeBases returns syms plus any change-base symbols they need that are
